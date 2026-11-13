@@ -72,12 +72,32 @@ const LAYER_OPTIONS: Array<{id: MapLayerType; label: string}> = [
   {id: 'terrain', label: '지형'},
 ];
 
+function normalizeKakaoKey(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().replace(/^["']|["']$/g, '').trim();
+}
+
 let kakaoSdkLoadPromise: Promise<void> | null = null;
 let loadedKakaoJsKey = '';
 
-function loadKakaoMapsSdk(jsKey: string): Promise<void> {
-  if (typeof window === 'undefined') {
-    return Promise.reject(new Error('Window unavailable'));
+function resetKakaoSdkLoader() {
+  kakaoSdkLoadPromise = null;
+  loadedKakaoJsKey = '';
+  if (typeof document !== 'undefined') {
+    document
+      .querySelectorAll('script[data-kakao-maps-sdk="true"]')
+      .forEach((el) => el.remove());
+  }
+}
+
+function loadKakaoMapsSdk(rawKey: string): Promise<void> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return Promise.reject(new Error('브라우저 환경이 아닙니다.'));
+  }
+
+  const jsKey = normalizeKakaoKey(rawKey);
+  if (!jsKey) {
+    return Promise.reject(new Error('카카오맵 JavaScript 키가 비어 있습니다.'));
   }
 
   if (window.kakao?.maps?.Map && loadedKakaoJsKey === jsKey) {
@@ -88,36 +108,111 @@ function loadKakaoMapsSdk(jsKey: string): Promise<void> {
     return kakaoSdkLoadPromise;
   }
 
+  const expectedSrc = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(
+    jsKey
+  )}&autoload=false&libraries=services`;
+
+  // Remove stale script tags when key changed
+  if (loadedKakaoJsKey && loadedKakaoJsKey !== jsKey) {
+    resetKakaoSdkLoader();
+  }
+
   loadedKakaoJsKey = jsKey;
   kakaoSdkLoadPromise = new Promise<void>((resolve, reject) => {
+    const fail = (message: string, targetScript?: HTMLScriptElement) => {
+      kakaoSdkLoadPromise = null;
+      loadedKakaoJsKey = '';
+      targetScript?.remove();
+      reject(new Error(message));
+    };
+
+    const runKakaoLoad = (targetScript?: HTMLScriptElement) => {
+      const mapsObj = window.kakao?.maps;
+      if (!mapsObj) {
+        fail(
+          'SDK 스크립트는 로드되었지만 window.kakao.maps 객체가 없습니다. (앱키·도메인·카카오맵 사용 설정을 확인해 주세요)',
+          targetScript
+        );
+        return;
+      }
+
+      if (typeof mapsObj.Map === 'function') {
+        resolve();
+        return;
+      }
+
+      if (typeof mapsObj.load !== 'function') {
+        fail(
+          'window.kakao.maps.load 함수를 찾을 수 없습니다.',
+          targetScript
+        );
+        return;
+      }
+
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        fail(
+          'window.kakao.maps.load() 응답 시간이 초과되었습니다. (t1.daumcdn.net 차단 여부를 확인해 주세요)',
+          targetScript
+        );
+      }, 12000);
+
+      try {
+        mapsObj.load(() => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timer);
+          if (typeof window.kakao?.maps?.Map !== 'function') {
+            fail(
+              'window.kakao.maps.load() 완료 후에도 kakao.maps.Map이 초기화되지 않았습니다.',
+              targetScript
+            );
+            return;
+          }
+          resolve();
+        });
+      } catch (err) {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        fail(
+          err instanceof Error
+            ? `kakao.maps.load 실행 오류: ${err.message}`
+            : 'kakao.maps.load 실행 중 오류가 발생했습니다.',
+          targetScript
+        );
+      }
+    };
+
     const existing = document.querySelector<HTMLScriptElement>(
       'script[data-kakao-maps-sdk="true"]'
     );
-    if (existing && window.kakao?.maps?.load) {
-      window.kakao.maps.load(() => resolve());
-      return;
+
+    if (existing) {
+      if (existing.src === expectedSrc && Boolean(window.kakao?.maps)) {
+        runKakaoLoad(existing);
+        return;
+      }
+      existing.remove();
     }
 
     const script = document.createElement('script');
-    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(
-      jsKey
-    )}&autoload=false&libraries=services`;
+    script.type = 'text/javascript';
+    script.src = expectedSrc;
     script.async = true;
     script.dataset.kakaoMapsSdk = 'true';
 
     script.onload = () => {
-      if (!window.kakao?.maps?.load) {
-        kakaoSdkLoadPromise = null;
-        reject(new Error('Kakao Maps SDK loaded without kakao.maps'));
-        return;
-      }
-      window.kakao.maps.load(() => resolve());
+      runKakaoLoad(script);
     };
 
     script.onerror = () => {
-      kakaoSdkLoadPromise = null;
-      script.remove();
-      reject(new Error('Failed to load Kakao Maps SDK script'));
+      fail(
+        'dapi.kakao.com/v2/maps/sdk.js 요청이 실패했습니다. (네트워크/광고 차단기, 카카오맵 사용 설정 ON, JavaScript 키 및 도메인 등록 여부를 확인해 주세요)',
+        script
+      );
     };
 
     document.head.appendChild(script);
@@ -494,14 +589,12 @@ export function PhotoMapViewport({
   onRoadDistancesComputed,
   mapCaptureRef,
 }: PhotoMapViewportProps) {
-  const [jsKey, setJsKey] = useState<string>(
-    import.meta.env.VITE_KAKAO_MAP_JS_KEY || ''
-  );
-  const [isConfigLoading, setIsConfigLoading] = useState<boolean>(
-    !import.meta.env.VITE_KAKAO_MAP_JS_KEY
-  );
+  const initialEnvJsKey = normalizeKakaoKey(import.meta.env.VITE_KAKAO_MAP_JS_KEY);
+  const [jsKey, setJsKey] = useState<string>(initialEnvJsKey);
+  const [isConfigLoading, setIsConfigLoading] = useState<boolean>(!initialEnvJsKey);
   const [sdkReady, setSdkReady] = useState(false);
   const [sdkError, setSdkError] = useState<string | null>(null);
+  const [sdkRetryCount, setSdkRetryCount] = useState(0);
   const [popupPhotoId, setPopupPhotoId] = useState<string | null>(null);
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -544,10 +637,16 @@ export function PhotoMapViewport({
 
     let cancelled = false;
     fetch('/api/kakao-config')
-      .then((r) => r.json())
-      .then((data: {jsKey?: string}) => {
-        if (!cancelled && data.jsKey) {
-          setJsKey(data.jsKey);
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) return null;
+        return (await r.json()) as {jsKey?: string};
+      })
+      .then((data) => {
+        const clean = normalizeKakaoKey(data?.jsKey);
+        if (!cancelled && clean) {
+          setJsKey(clean);
         }
       })
       .catch(() => {})
@@ -562,12 +661,15 @@ export function PhotoMapViewport({
 
   // Load Kakao Maps SDK & initialize Map instance
   useEffect(() => {
-    if (!jsKey || !mapContainerRef.current) return;
+    const cleanKey = normalizeKakaoKey(jsKey);
+    const container = mapContainerRef.current;
+    if (!cleanKey || !container) return;
 
     let cancelled = false;
     let resizeObserver: ResizeObserver | null = null;
+    setSdkError(null);
 
-    loadKakaoMapsSdk(jsKey)
+    loadKakaoMapsSdk(cleanKey)
       .then(() => {
         if (cancelled || !mapContainerRef.current || !window.kakao?.maps) return;
 
@@ -577,10 +679,12 @@ export function PhotoMapViewport({
           level: DEFAULT_LEVEL,
         });
 
-        map.addControl(
-          new kMaps.ZoomControl(),
-          kMaps.ControlPosition.BOTTOMRIGHT
-        );
+        if (kMaps.ZoomControl && kMaps.ControlPosition) {
+          map.addControl(
+            new kMaps.ZoomControl(),
+            kMaps.ControlPosition.BOTTOMRIGHT
+          );
+        }
 
         kMaps.event.addListener(map, 'click', (mouseEvent: kakao.maps.MouseEvent) => {
           const lat = mouseEvent.latLng.getLat();
@@ -607,6 +711,12 @@ export function PhotoMapViewport({
         setSdkError(null);
         setSdkReady(true);
 
+        window.requestAnimationFrame(() => {
+          if (!cancelled) {
+            map.relayout();
+          }
+        });
+
         resizeObserver = new ResizeObserver(() => {
           map.relayout();
         });
@@ -628,7 +738,7 @@ export function PhotoMapViewport({
       mapRef.current = null;
       setSdkReady(false);
     };
-  }, [jsKey]);
+  }, [jsKey, sdkRetryCount]);
 
   const sectionColorLookup = useMemo(() => {
     const lookup: Record<string, string> = {};
@@ -1438,28 +1548,74 @@ export function PhotoMapViewport({
                   : '카카오맵 SDK를 불러오지 못했습니다'}
               </h2>
             </div>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              카카오 디벨로퍼스(developers.kakao.com)에서 애플리케이션을 생성한 뒤 아래 두 가지를 설정해 주세요.
-            </p>
-            <ol className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5 list-decimal list-inside">
-              <li>
-                환경변수(Secrets)에{' '}
-                <code className="font-mono font-semibold text-blue-700">
-                  KAKAO_MAP_JS_KEY
-                </code>{' '}
-                (선택: 도로 경로·주소용{' '}
-                <code className="font-mono font-semibold text-slate-800">
-                  KAKAO_REST_API_KEY
-                </code>
-                ) 등록
-              </li>
-              <li>
-                카카오 디벨로퍼스 → 플랫폼 → Web 사이트 도메인에 현재 주소 등록:
-                <div className="mt-1 px-2 py-1 bg-white border border-slate-200 rounded font-mono text-[11px] text-slate-800 break-all">
-                  {currentOrigin}
+            {sdkError && jsKey ? (
+              <>
+                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-3 space-y-1">
+                  <p className="font-medium break-words">{sdkError}</p>
+                  <p className="text-[11px] text-red-600 font-mono">
+                    감지된 키: {jsKey.slice(0, 4)}**** (길이 {jsKey.length}자)
+                  </p>
                 </div>
-              </li>
-            </ol>
+                <ol className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5 list-decimal list-inside">
+                  <li>
+                    카카오 디벨로퍼스 → <strong>제품 설정 → 카카오맵 → 사용 설정(ON)</strong> 활성화 확인
+                  </li>
+                  <li>
+                    <strong>플랫폼 → Web → 사이트 도메인</strong>에 현재 주소 등록 확인:
+                    <div className="mt-1 px-2 py-1 bg-white border border-slate-200 rounded font-mono text-[11px] text-slate-800 break-all">
+                      {currentOrigin}
+                    </div>
+                  </li>
+                  <li>
+                    <code className="font-mono font-semibold text-blue-700">
+                      VITE_KAKAO_MAP_JS_KEY
+                    </code>
+                    에 REST API 키가 아닌 <strong>JavaScript 키</strong>가 따옴표·공백 없이 입력되었는지 확인
+                  </li>
+                  <li>
+                    브라우저 광고 차단기(uBlock/AdGuard 등) 차단 해제 및 개발자 도구 Network 탭에서 필터를 <strong>All</strong>(또는 <strong>JS</strong>)로 설정해 <code className="font-mono">dapi.kakao.com</code> 상태 확인
+                  </li>
+                </ol>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetKakaoSdkLoader();
+                      setSdkError(null);
+                      setSdkRetryCount((c) => c + 1);
+                    }}
+                    className="px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium transition-colors cursor-pointer"
+                  >
+                    SDK 다시 불러오기
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  카카오 디벨로퍼스(developers.kakao.com)에서 애플리케이션을 생성한 뒤 아래 두 가지를 설정해 주세요.
+                </p>
+                <ol className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5 list-decimal list-inside">
+                  <li>
+                    환경변수에{' '}
+                    <code className="font-mono font-semibold text-blue-700">
+                      VITE_KAKAO_MAP_JS_KEY
+                    </code>{' '}
+                    (Vercel/Vite) 또는{' '}
+                    <code className="font-mono font-semibold text-slate-800">
+                      KAKAO_MAP_JS_KEY
+                    </code>{' '}
+                    (서버) 등록
+                  </li>
+                  <li>
+                    카카오 디벨로퍼스 → 플랫폼 → Web 사이트 도메인에 현재 주소 등록 및 카카오맵 사용 설정 ON:
+                    <div className="mt-1 px-2 py-1 bg-white border border-slate-200 rounded font-mono text-[11px] text-slate-800 break-all">
+                      {currentOrigin}
+                    </div>
+                  </li>
+                </ol>
+              </>
+            )}
           </div>
         </div>
       ) : null}
