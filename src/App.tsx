@@ -89,6 +89,12 @@ export default function App() {
   const [focusTrigger, setFocusTrigger] = useState(0);
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [roadviewRequest, setRoadviewRequest] = useState<{
+    lat: number;
+    lng: number;
+    label?: string;
+    nonce: number;
+  } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mapCaptureRef = useRef<(() => Promise<string | null>) | null>(null);
@@ -986,6 +992,7 @@ export default function App() {
             onTriggerUpload={handleTriggerUpload}
             onRoadDistancesComputed={handleRoadDistancesComputed}
             mapCaptureRef={mapCaptureRef}
+            roadviewRequest={roadviewRequest}
           />
 
           {(selectedPhoto || selectedEntry) && (
@@ -1017,6 +1024,9 @@ export default function App() {
               onToggleEntryStatus={handleToggleEntryStatus}
               onSelectPhotoFromEntry={(pid) => handleSelectPhoto(pid)}
               onFocusOnMap={() => setFocusTrigger((n) => n + 1)}
+              onOpenRoadview={({lat, lng, label}) =>
+                setRoadviewRequest({lat, lng, label, nonce: Date.now()})
+              }
             />
           )}
         </section>

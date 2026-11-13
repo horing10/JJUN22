@@ -1,10 +1,13 @@
 import {
   AlertCircle,
+  Compass,
   Crosshair,
+  ExternalLink,
   ImagePlus,
   Layers,
   Loader2,
   Maximize2,
+  Minimize2,
   Plus,
   Route as RouteIcon,
   Upload,
@@ -63,6 +66,12 @@ interface PhotoMapViewportProps {
   onTriggerUpload: () => void;
   onRoadDistancesComputed: (distances: Record<string, number>) => void;
   mapCaptureRef?: MutableRefObject<(() => Promise<string | null>) | null>;
+  roadviewRequest?: {
+    lat: number;
+    lng: number;
+    label?: string;
+    nonce: number;
+  } | null;
 }
 
 const LAYER_OPTIONS: Array<{id: MapLayerType; label: string}> = [
@@ -385,7 +394,8 @@ function buildPhotoMarkerNode(
 
 function buildPhotoPopupNode(
   photo: PhotoItem & {lat: number; lng: number},
-  onClose: () => void
+  onClose: () => void,
+  onOpenRoadview: () => void
 ): HTMLElement {
   const root = document.createElement('div');
   root.className =
@@ -439,12 +449,26 @@ function buildPhotoPopupNode(
 
   const footer = document.createElement('div');
   footer.className =
-    'flex items-center justify-between gap-2 mt-2 pt-1.5 border-t border-slate-100 text-[11px] text-slate-500';
+    'flex items-center justify-between gap-1.5 mt-2 pt-1.5 border-t border-slate-100 text-[11px] text-slate-500';
 
   const coords = document.createElement('span');
-  coords.className = 'font-mono tabular-nums';
+  coords.className = 'font-mono tabular-nums truncate';
   coords.textContent = formatDecimalCoords(photo.lat, photo.lng);
   footer.appendChild(coords);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-2 shrink-0';
+
+  const rvBtn = document.createElement('button');
+  rvBtn.type = 'button';
+  rvBtn.className =
+    'inline-flex items-center gap-0.5 text-blue-600 hover:text-blue-700 font-semibold whitespace-nowrap cursor-pointer';
+  rvBtn.textContent = '로드뷰';
+  rvBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onOpenRoadview();
+  });
+  actions.appendChild(rvBtn);
 
   const link = document.createElement('a');
   const label = photo.location?.shortAddress || photo.fileName;
@@ -454,12 +478,44 @@ function buildPhotoPopupNode(
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.className =
-    'inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap shrink-0';
+    'inline-flex items-center gap-1 text-slate-600 hover:text-slate-900 font-medium whitespace-nowrap';
   link.textContent = '카카오맵';
-  footer.appendChild(link);
+  actions.appendChild(link);
+
+  footer.appendChild(actions);
 
   root.appendChild(footer);
   return root;
+}
+
+function buildRoadviewWalkerNode(panDeg: number): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className =
+    'relative w-12 h-12 flex items-center justify-center pointer-events-none select-none';
+
+  // Viewing direction cone rotated by Kakao Roadview pan angle
+  const cone = document.createElement('div');
+  cone.className = 'absolute inset-0 flex items-start justify-center';
+  cone.style.transform = `rotate(${panDeg}deg)`;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 48 48');
+  svg.setAttribute('width', '48');
+  svg.setAttribute('height', '48');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M24 24 L13 4 A22 22 0 0 1 35 4 Z');
+  path.setAttribute('fill', 'rgba(37, 99, 235, 0.34)');
+  path.setAttribute('stroke', 'rgba(37, 99, 235, 0.75)');
+  path.setAttribute('stroke-width', '1.2');
+  svg.appendChild(path);
+  cone.appendChild(svg);
+  wrap.appendChild(cone);
+
+  const dot = document.createElement('div');
+  dot.className =
+    'relative w-4 h-4 rounded-full bg-blue-600 border-2 border-white shadow-md';
+  wrap.appendChild(dot);
+
+  return wrap;
 }
 
 function buildWorkEntryMarkerNode(
@@ -588,6 +644,7 @@ export function PhotoMapViewport({
   onTriggerUpload,
   onRoadDistancesComputed,
   mapCaptureRef,
+  roadviewRequest,
 }: PhotoMapViewportProps) {
   const initialEnvJsKey = normalizeKakaoKey(import.meta.env.VITE_KAKAO_MAP_JS_KEY);
   const [jsKey, setJsKey] = useState<string>(initialEnvJsKey);
@@ -597,9 +654,29 @@ export function PhotoMapViewport({
   const [sdkRetryCount, setSdkRetryCount] = useState(0);
   const [popupPhotoId, setPopupPhotoId] = useState<string | null>(null);
 
+  const [roadviewMode, setRoadviewMode] = useState(false);
+  const [roadviewTarget, setRoadviewTarget] = useState<{
+    lat: number;
+    lng: number;
+    label?: string;
+    nonce: number;
+  } | null>(null);
+  const [roadviewActiveCoords, setRoadviewActiveCoords] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [roadviewLoading, setRoadviewLoading] = useState(false);
+  const [roadviewError, setRoadviewError] = useState<string | null>(null);
+  const [roadviewExpanded, setRoadviewExpanded] = useState(false);
+
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<kakao.maps.Map | null>(null);
   const terrainOverlayActiveRef = useRef(false);
+  const roadviewOverlayAppliedRef = useRef(false);
+  const roadviewContainerRef = useRef<HTMLDivElement | null>(null);
+  const roadviewRef = useRef<kakao.maps.Roadview | null>(null);
+  const roadviewClientRef = useRef<kakao.maps.RoadviewClient | null>(null);
+  const roadviewMarkerRef = useRef<kakao.maps.CustomOverlay | null>(null);
   const routePolylinesRef = useRef<kakao.maps.Polyline[]>([]);
   const routeArrowsRef = useRef<kakao.maps.CustomOverlay[]>([]);
   const photoOverlaysRef = useRef<kakao.maps.CustomOverlay[]>([]);
@@ -615,17 +692,40 @@ export function PhotoMapViewport({
   const prevFitTriggerRef = useRef(0);
   const prevFocusTriggerRef = useRef(0);
 
+  const openRoadviewAt = (lat: number, lng: number, label?: string) => {
+    setRoadviewMode(true);
+    setRoadviewTarget({lat, lng, label, nonce: Date.now()});
+  };
+
+  const closeRoadview = () => {
+    setRoadviewTarget(null);
+    setRoadviewActiveCoords(null);
+    setRoadviewError(null);
+    setRoadviewLoading(false);
+    setRoadviewExpanded(false);
+    setRoadviewMode(false);
+    if (roadviewMarkerRef.current) {
+      roadviewMarkerRef.current.setMap(null);
+      roadviewMarkerRef.current = null;
+    }
+    roadviewRef.current = null;
+  };
+
   const pickStateRef = useRef({
     manualPinPhoto,
     isPickingWorkLocation,
+    roadviewMode,
     onManualPinAssign,
     onPickWorkLocation,
+    openRoadviewAt,
   });
   pickStateRef.current = {
     manualPinPhoto,
     isPickingWorkLocation,
+    roadviewMode,
     onManualPinAssign,
     onPickWorkLocation,
+    openRoadviewAt,
   };
 
   // Load Kakao Map JS Key from server config if not bundled via VITE_ env
@@ -692,8 +792,10 @@ export function PhotoMapViewport({
           const {
             manualPinPhoto: pinPhoto,
             isPickingWorkLocation: pickingWork,
+            roadviewMode: isRoadviewMode,
             onManualPinAssign: assignPin,
             onPickWorkLocation: pickWork,
+            openRoadviewAt: launchRoadview,
           } = pickStateRef.current;
 
           if (pinPhoto) {
@@ -702,6 +804,11 @@ export function PhotoMapViewport({
           }
           if (pickingWork) {
             pickWork(lat, lng);
+            return;
+          }
+          if (isRoadviewMode) {
+            setPopupPhotoId(null);
+            launchRoadview(lat, lng);
             return;
           }
           setPopupPhotoId(null);
@@ -1067,7 +1174,16 @@ export function PhotoMapViewport({
     const photo = gpsPhotos.find((p) => p.id === popupPhotoId);
     if (!photo) return;
 
-    const popupNode = buildPhotoPopupNode(photo, () => setPopupPhotoId(null));
+    const popupNode = buildPhotoPopupNode(
+      photo,
+      () => setPopupPhotoId(null),
+      () =>
+        openRoadviewAt(
+          photo.lat,
+          photo.lng,
+          photo.location?.shortAddress || photo.fileName
+        )
+    );
     const popup = new kMaps.CustomOverlay({
       map,
       position: new kMaps.LatLng(photo.lat, photo.lng),
@@ -1518,16 +1634,202 @@ export function PhotoMapViewport({
   const currentOrigin =
     typeof window !== 'undefined' ? window.location.origin : '';
 
+  // Sync external Roadview launch requests from PhotoInspector
+  useEffect(() => {
+    if (!roadviewRequest) return;
+    openRoadviewAt(roadviewRequest.lat, roadviewRequest.lng, roadviewRequest.label);
+  }, [roadviewRequest]);
+
+  // Toggle Kakao Roadview street overlay lines on map
+  useEffect(() => {
+    const map = mapRef.current;
+    const kMaps = window.kakao?.maps;
+    if (!sdkReady || !map || !kMaps) return;
+
+    if (roadviewMode) {
+      if (!roadviewOverlayAppliedRef.current) {
+        map.addOverlayMapTypeId(kMaps.MapTypeId.ROADVIEW);
+        roadviewOverlayAppliedRef.current = true;
+      }
+    } else if (roadviewOverlayAppliedRef.current) {
+      map.removeOverlayMapTypeId(kMaps.MapTypeId.ROADVIEW);
+      roadviewOverlayAppliedRef.current = false;
+    }
+
+    return () => {
+      if (roadviewOverlayAppliedRef.current && mapRef.current) {
+        try {
+          mapRef.current.removeOverlayMapTypeId(kMaps.MapTypeId.ROADVIEW);
+        } catch {
+          // Map already unmounted
+        }
+        roadviewOverlayAppliedRef.current = false;
+      }
+    };
+  }, [sdkReady, roadviewMode]);
+
+  // Load nearest Kakao Roadview panoId and sync walker position/direction marker on map
+  useEffect(() => {
+    const map = mapRef.current;
+    const kMaps = window.kakao?.maps;
+    const rvContainer = roadviewContainerRef.current;
+
+    if (!sdkReady || !map || !kMaps || !roadviewTarget || !rvContainer) {
+      if (roadviewMarkerRef.current) {
+        roadviewMarkerRef.current.setMap(null);
+        roadviewMarkerRef.current = null;
+      }
+      return;
+    }
+
+    let cancelled = false;
+    setRoadviewLoading(true);
+    setRoadviewError(null);
+
+    if (!roadviewClientRef.current) {
+      roadviewClientRef.current = new kMaps.RoadviewClient();
+    }
+    const client = roadviewClientRef.current;
+    const requestedPos = new kMaps.LatLng(roadviewTarget.lat, roadviewTarget.lng);
+
+    const updateWalkerOverlay = (pos: kakao.maps.LatLng, panDeg: number) => {
+      if (roadviewMarkerRef.current) {
+        roadviewMarkerRef.current.setMap(null);
+      }
+      roadviewMarkerRef.current = new kMaps.CustomOverlay({
+        map,
+        position: pos,
+        content: buildRoadviewWalkerNode(panDeg),
+        xAnchor: 0.5,
+        yAnchor: 0.5,
+        zIndex: 1100,
+      });
+    };
+
+    const handlePanoId = (panoId: number | null) => {
+      if (cancelled) return;
+      if (!panoId) {
+        setRoadviewLoading(false);
+        setRoadviewActiveCoords(null);
+        setRoadviewError(
+          '반경 250m 이내에 제공되는 카카오 로드뷰가 없습니다. 지도의 파란색 도로를 클릭해 주세요.'
+        );
+        if (roadviewMarkerRef.current) {
+          roadviewMarkerRef.current.setMap(null);
+          roadviewMarkerRef.current = null;
+        }
+        return;
+      }
+
+      if (!roadviewRef.current) {
+        roadviewRef.current = new kMaps.Roadview(rvContainer);
+      }
+      const rv = roadviewRef.current;
+
+      const syncFromRoadview = () => {
+        if (cancelled) return;
+        const pos = rv.getPosition();
+        const vp = rv.getViewpoint();
+        setRoadviewActiveCoords({lat: pos.getLat(), lng: pos.getLng()});
+        updateWalkerOverlay(pos, vp?.pan ?? 0);
+      };
+
+      const onPositionChanged = () => {
+        if (cancelled) return;
+        const pos = rv.getPosition();
+        syncFromRoadview();
+        map.panTo(pos);
+      };
+
+      const onViewpointChanged = () => {
+        syncFromRoadview();
+      };
+
+      kMaps.event.addListener(rv, 'position_changed', onPositionChanged);
+      kMaps.event.addListener(rv, 'viewpoint_changed', onViewpointChanged);
+
+      rv.setPanoId(panoId, requestedPos);
+      map.panTo(requestedPos);
+      if (map.getLevel() > 4) {
+        map.setLevel(4, {animate: true});
+      }
+      updateWalkerOverlay(requestedPos, 0);
+      setRoadviewActiveCoords({
+        lat: roadviewTarget.lat,
+        lng: roadviewTarget.lng,
+      });
+      setRoadviewLoading(false);
+      window.requestAnimationFrame(() => {
+        if (!cancelled) {
+          rv.relayout();
+          map.relayout();
+        }
+      });
+
+      return () => {
+        kMaps.event.removeListener(rv, 'position_changed', onPositionChanged);
+        kMaps.event.removeListener(rv, 'viewpoint_changed', onViewpointChanged);
+      };
+    };
+
+    let cleanupListeners: (() => void) | undefined;
+    client.getNearestPanoId(requestedPos, 80, (panoId) => {
+      if (cancelled) return;
+      if (panoId) {
+        cleanupListeners = handlePanoId(panoId);
+        return;
+      }
+      client.getNearestPanoId(requestedPos, 250, (fallbackPanoId) => {
+        if (cancelled) return;
+        cleanupListeners = handlePanoId(fallbackPanoId);
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cleanupListeners?.();
+    };
+  }, [sdkReady, roadviewTarget]);
+
+  // Relayout both Kakao Map and Roadview smoothly when split/expanded changes
+  useEffect(() => {
+    if (!sdkReady) return;
+    const raf = window.requestAnimationFrame(() => {
+      mapRef.current?.relayout();
+      roadviewRef.current?.relayout();
+    });
+    const timer = window.setTimeout(() => {
+      mapRef.current?.relayout();
+      roadviewRef.current?.relayout();
+    }, 150);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [sdkReady, roadviewTarget, roadviewExpanded]);
+
+  const hasRoadviewPanel = Boolean(roadviewTarget);
+
   return (
     <div
-      className={`relative w-full h-full bg-slate-100 ${
-        isPickingMode ? 'cursor-crosshair' : ''
+      className={`relative w-full h-full bg-slate-100 flex flex-col-reverse md:flex-row-reverse overflow-hidden ${
+        isPickingMode || roadviewMode ? 'cursor-crosshair' : ''
       }`}
     >
-      {/* Isolated stacking context keeps Kakao Map layers below React overlays */}
-      <div className="w-full h-full isolate z-0">
-        <div ref={mapContainerRef} className="w-full h-full" />
-      </div>
+      {/* Map Pane */}
+      <div
+        className={`relative min-h-0 min-w-0 ${
+          hasRoadviewPanel
+            ? roadviewExpanded
+              ? 'hidden'
+              : 'w-full h-1/2 md:w-1/2 md:h-full'
+            : 'w-full h-full'
+        }`}
+      >
+        {/* Isolated stacking context keeps Kakao Map layers below React overlays */}
+        <div className="w-full h-full isolate z-0">
+          <div ref={mapContainerRef} className="w-full h-full" />
+        </div>
 
       {/* Loading or Missing Kakao Map JS Key / Domain Setup Notice */}
       {isConfigLoading ? (
@@ -1650,6 +1952,25 @@ export function PhotoMapViewport({
             지도에 작업·사진 등록
           </button>
 
+          <button
+            type="button"
+            onClick={() => {
+              if (roadviewMode || hasRoadviewPanel) {
+                closeRoadview();
+              } else {
+                setRoadviewMode(true);
+              }
+            }}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border shadow-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              roadviewMode || hasRoadviewPanel
+                ? 'bg-sky-600 border-sky-600 text-white'
+                : 'bg-white/95 border-slate-200 text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <Compass className="w-3.5 h-3.5" />
+            로드뷰 {roadviewMode || hasRoadviewPanel ? '종료' : ''}
+          </button>
+
           {routeGroups.length > 0 && (
             <button
               type="button"
@@ -1737,30 +2058,40 @@ export function PhotoMapViewport({
         </div>
       )}
 
-      {/* Manual Pin or Work Location Pick Banner */}
-      {isPickingMode && (
+      {/* Manual Pin, Work Location Pick, or Roadview Mode Banner */}
+      {(isPickingMode || (roadviewMode && !hasRoadviewPanel)) && (
         <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 bg-slate-900 text-white px-4 py-2.5 rounded-lg shadow-lg max-w-[92vw]">
-          <Crosshair className="w-4 h-4 text-blue-400 shrink-0" />
+          {isPickingMode ? (
+            <Crosshair className="w-4 h-4 text-blue-400 shrink-0" />
+          ) : (
+            <Compass className="w-4 h-4 text-sky-400 shrink-0" />
+          )}
           <p className="text-xs sm:text-sm font-medium truncate">
             {manualPinPhoto
               ? `지도를 클릭해 ${manualPinPhoto.fileName}의 위치를 지정하세요`
-              : '지도를 클릭해 작업 및 사진 첨부 위치를 선택하세요'}
+              : isPickingWorkLocation
+                ? '지도를 클릭해 작업 및 사진 첨부 위치를 선택하세요'
+                : '파란색으로 표시된 도로를 클릭하면 카카오맵 로드뷰가 열립니다'}
           </p>
           <button
             type="button"
             onClick={
-              manualPinPhoto ? onCancelManualPin : onCancelWorkLocationPick
+              manualPinPhoto
+                ? onCancelManualPin
+                : isPickingWorkLocation
+                  ? onCancelWorkLocationPick
+                  : closeRoadview
             }
             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-white/15 hover:bg-white/25 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
-            취소
+            {isPickingMode ? '취소' : '닫기'}
           </button>
         </div>
       )}
 
       {/* Initial Empty State Card over Live Map */}
-      {sdkReady && photos.length === 0 && workEntries.length === 0 && (
+      {sdkReady && photos.length === 0 && workEntries.length === 0 && !roadviewMode && !hasRoadviewPanel && (
         <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none z-10">
           <div className="pointer-events-auto max-w-md w-full bg-white/95 backdrop-blur-md border border-slate-200 rounded-xl p-6 shadow-lg text-center">
             <div className="w-11 h-11 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-3.5">
@@ -1793,6 +2124,104 @@ export function PhotoMapViewport({
             <p className="text-xs text-slate-400 mt-3.5">
               카카오맵 기반 · JPG · HEIC · PNG · WebP 지원
             </p>
+          </div>
+        </div>
+      )}
+      </div>
+
+      {/* Kakao Roadview Split / Fullscreen Panel */}
+      {hasRoadviewPanel && roadviewTarget && (
+        <div
+          className={`relative bg-slate-950 border-b md:border-b-0 md:border-r border-slate-300 flex flex-col min-h-0 min-w-0 z-20 ${
+            roadviewExpanded
+              ? 'w-full h-full'
+              : 'w-full h-1/2 md:w-1/2 md:h-full'
+          }`}
+        >
+          <div className="px-3 py-2 bg-slate-900 text-white flex items-center justify-between gap-2 border-b border-slate-800 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <Compass className="w-4 h-4 text-sky-400 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold truncate">
+                  {roadviewTarget.label || '카카오맵 로드뷰'}
+                </p>
+                <p className="text-[10px] font-mono text-slate-400 tabular-nums truncate">
+                  {formatDecimalCoords(
+                    roadviewActiveCoords?.lat ?? roadviewTarget.lat,
+                    roadviewActiveCoords?.lng ?? roadviewTarget.lng
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setRoadviewExpanded((v) => !v)}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-[11px] font-medium transition-colors cursor-pointer"
+                title={roadviewExpanded ? '지도와 함께 보기' : '로드뷰 전체 보기'}
+              >
+                {roadviewExpanded ? (
+                  <>
+                    <Minimize2 className="w-3 h-3" />
+                    <span className="hidden sm:inline">분할 보기</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3 h-3" />
+                    <span className="hidden sm:inline">전체 화면</span>
+                  </>
+                )}
+              </button>
+              <a
+                href={`https://map.kakao.com/link/roadview/${
+                  roadviewActiveCoords?.lat ?? roadviewTarget.lat
+                },${roadviewActiveCoords?.lng ?? roadviewTarget.lng}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="카카오맵 로드뷰 새 창으로 열기"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-[11px] font-medium transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />
+                <span className="hidden sm:inline">새 창</span>
+              </a>
+              <button
+                type="button"
+                aria-label="로드뷰 닫기"
+                onClick={closeRoadview}
+                className="p-1 rounded hover:bg-white/20 text-slate-300 hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="relative flex-1 min-h-0">
+            <div ref={roadviewContainerRef} className="w-full h-full" />
+
+            {roadviewLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-950/75 text-white text-xs gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
+                주변 로드뷰를 불러오는 중...
+              </div>
+            )}
+
+            {roadviewError && !roadviewLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-950/90 p-5">
+                <div className="max-w-xs w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-center space-y-2.5">
+                  <AlertCircle className="w-6 h-6 text-amber-400 mx-auto" />
+                  <p className="text-xs text-slate-200 leading-relaxed">
+                    {roadviewError}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={closeRoadview}
+                    className="px-3 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-medium hover:bg-slate-100 cursor-pointer"
+                  >
+                    로드뷰 닫기
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

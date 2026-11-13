@@ -21,6 +21,7 @@ declare namespace kakao.maps {
     SKYVIEW = 2,
     HYBRID = 3,
     TERRAIN = 5,
+    ROADVIEW = 8,
   }
 
   enum ControlPosition {
@@ -151,6 +152,30 @@ declare namespace kakao.maps {
         callback: (result: Coord2AddressResult[], status: Status) => void
       ): void;
     }
+  }
+
+  interface RoadviewViewpoint {
+    pan: number;
+    tilt: number;
+    zoom: number;
+  }
+
+  class Roadview {
+    constructor(container: HTMLElement, options?: {panoId?: number; panoX?: number; panoY?: number; pan?: number; tilt?: number; zoom?: number});
+    setPanoId(panoId: number, position: LatLng): void;
+    setViewpoint(viewpoint: Partial<RoadviewViewpoint>): void;
+    getViewpoint(): RoadviewViewpoint;
+    getPosition(): LatLng;
+    getPanoId(): number;
+    relayout(): void;
+  }
+
+  class RoadviewClient {
+    getNearestPanoId(
+      position: LatLng,
+      radius: number,
+      callback: (panoId: number | null) => void
+    ): void;
   }
 
   function load(callback: () => void): void;

@@ -3,6 +3,7 @@ import {
   Check,
   CheckCircle2,
   ClipboardCheck,
+  Compass,
   Copy,
   Crosshair,
   Edit3,
@@ -34,6 +35,7 @@ interface PhotoInspectorProps {
   onToggleEntryStatus: (entryId: string) => void;
   onSelectPhotoFromEntry: (photoId: string) => void;
   onFocusOnMap: () => void;
+  onOpenRoadview?: (target: {lat: number; lng: number; label?: string}) => void;
 }
 
 export function PhotoInspector({
@@ -50,6 +52,7 @@ export function PhotoInspector({
   onToggleEntryStatus,
   onSelectPhotoFromEntry,
   onFocusOnMap,
+  onOpenRoadview,
 }: PhotoInspectorProps) {
   const [copied, setCopied] = useState(false);
 
@@ -179,10 +182,26 @@ export function PhotoInspector({
               <MapPin className="w-3.5 h-3.5" />
               위치로 이동
             </button>
+            {onOpenRoadview && (
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenRoadview({
+                    lat: workEntry.lat,
+                    lng: workEntry.lng,
+                    label: workEntry.location?.shortAddress || workEntry.title,
+                  })
+                }
+                className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 text-xs font-medium text-blue-700 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Compass className="w-3.5 h-3.5" />
+                로드뷰
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onEditWorkEntry(workEntry)}
-              className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer"
+              className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer whitespace-nowrap shrink-0"
             >
               <Edit3 className="w-3.5 h-3.5" />
               수정·사진추가
@@ -333,7 +352,7 @@ export function PhotoInspector({
               )}
             </div>
 
-            <div className="flex items-center gap-2 pt-0.5">
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
               <button
                 type="button"
                 onClick={onFocusOnMap}
@@ -342,6 +361,22 @@ export function PhotoInspector({
                 <MapPin className="w-3.5 h-3.5" />
                 지도 중앙으로
               </button>
+              {onOpenRoadview && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenRoadview({
+                      lat: photo.lat!,
+                      lng: photo.lng!,
+                      label: photo.location?.shortAddress || photo.fileName,
+                    })
+                  }
+                  className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 text-xs font-medium text-blue-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                  로드뷰
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onStartManualPin(photo.id)}
