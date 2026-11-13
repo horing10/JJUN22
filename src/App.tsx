@@ -34,6 +34,10 @@ import {
   reverseGeocodeCoords,
 } from './utils/exif';
 import {
+  extractFilesFromDataTransfer,
+  filterSupportedImageFiles,
+} from './utils/fileDrop';
+import {
   autoClusterPhotosIntoSections,
   buildConnectedPhotoOrder,
   computeSectionProgress,
@@ -492,14 +496,12 @@ export default function App() {
 
   const processPhotoFiles = useCallback(
     async (fileList: FileList | File[], autoCluster = true): Promise<PhotoItem[]> => {
-      const files = Array.from(fileList).filter(
-        (f) =>
-          f.type.startsWith('image/') ||
-          /\.(jpe?g|png|webp|heic|heif|tiff?)$/i.test(f.name)
-      );
+      const files = await filterSupportedImageFiles(fileList);
 
       if (files.length === 0) {
-        setUploadNotice('이미지 파일(JPG, HEIC, PNG, WebP)만 업로드할 수 있습니다.');
+        setUploadNotice(
+          '지원되는 이미지 파일(JPG, HEIC/HEIF, PNG, WebP, TIFF, AVIF, RAW 등)만 업로드할 수 있습니다.'
+        );
         return [];
       }
 
@@ -1337,16 +1339,47 @@ export default function App() {
     [photos]
   );
 
+  useEffect(() => {
+    const handleWindowDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
+    };
+    const handleWindowDrop = (e: DragEvent) => {
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDraggingOver(false);
+      if (e.dataTransfer) {
+        void extractFilesFromDataTransfer(e.dataTransfer).then((droppedFiles) => {
+          if (droppedFiles.length > 0) {
+            void processPhotoFiles(droppedFiles, true);
+          }
+        });
+      }
+    };
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, [processPhotoFiles]);
+
   return (
     <div
       className="h-screen supports-[height:100dvh]:h-dvh w-screen flex flex-col overflow-hidden bg-slate-50 text-slate-900"
       onDragEnter={(e) => {
+        if (!e.dataTransfer?.types?.includes('Files')) return;
         e.preventDefault();
         dragCounterRef.current += 1;
         setIsDraggingOver(true);
       }}
       onDragOver={(e) => {
+        if (!e.dataTransfer?.types?.includes('Files')) return;
         e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
       }}
       onDragLeave={(e) => {
         e.preventDefault();
@@ -1360,8 +1393,12 @@ export default function App() {
         e.preventDefault();
         dragCounterRef.current = 0;
         setIsDraggingOver(false);
-        if (e.dataTransfer.files?.length) {
-          void processPhotoFiles(e.dataTransfer.files, true);
+        if (e.dataTransfer) {
+          void extractFilesFromDataTransfer(e.dataTransfer).then((droppedFiles) => {
+            if (droppedFiles.length > 0) {
+              void processPhotoFiles(droppedFiles, true);
+            }
+          });
         }
       }}
     >
@@ -1476,7 +1513,7 @@ export default function App() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,.heic,.heif"
+        accept="image/*,.heic,.heif,.hif,.avif,.tiff,.tif,.dng,.cr2,.cr3,.nef,.arw"
         className="hidden"
         onChange={(e) => {
           if (e.target.files?.length) {
@@ -1746,17 +1783,17 @@ export default function App() {
         />
       )}
 
-      {isDraggingOver && (
+      {isDraggingOver && !workModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-xs flex items-center justify-center p-6 pointer-events-none">
           <div className="bg-white border-2 border-dashed border-blue-600 rounded-2xl px-10 py-8 text-center shadow-2xl max-w-sm">
             <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-3">
               <ImagePlus className="w-6 h-6" />
             </div>
             <p className="text-base font-semibold text-slate-900">
-              여기에 작업 사진을 놓으세요
+              여기에 사진 파일 또는 폴더를 놓으세요
             </p>
             <p className="text-xs text-slate-500 mt-1">
-              GPS를 분석해 작업구간 색상 표기, 도로 연결 및 정확한 주소를 판별합니다
+              HEIC, JPG, PNG, WebP 등 모든 사진의 GPS·촬영정보를 분석해 작업구간과 주소를 표시합니다
             </p>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import type {PhotoItem, WorkEntry, WorkSection} from '../types/photo';
+import {generateBrowserCompatiblePreview} from './exif';
 
 const DB_NAME = 'photoatlas_workspace_v1';
 const DB_VERSION = 1;
@@ -143,9 +144,19 @@ export async function loadWorkspaceState(): Promise<{
           req.onerror = () => resolve(undefined);
         });
         const previewUrl = blob ? URL.createObjectURL(blob) : '';
+        let fallbackPreviewUrl: string | undefined;
+        const isHeic =
+          blob &&
+          (record.mimeType === 'image/heic' ||
+            record.mimeType === 'image/heif' ||
+            /\.(heic|heif|hif)$/i.test(record.fileName));
+        if (blob && isHeic) {
+          fallbackPreviewUrl = await generateBrowserCompatiblePreview(blob, true);
+        }
         return {
           ...record,
           previewUrl,
+          fallbackPreviewUrl,
         };
       })
     );

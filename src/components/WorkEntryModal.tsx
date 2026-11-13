@@ -2,6 +2,7 @@ import {Check, Crosshair, MapPin, Upload, X} from 'lucide-react';
 import {useRef, useState} from 'react';
 import type {PhotoItem, WorkEntry, WorkSection, WorkStatus} from '../types/photo';
 import {formatDecimalCoords} from '../utils/exif';
+import {extractFilesFromDataTransfer} from '../utils/fileDrop';
 import {toDateInputString} from '../utils/geo';
 import {PhotoThumbnail} from './PhotoThumbnail';
 
@@ -12,7 +13,7 @@ interface WorkEntryModalProps {
   photos: PhotoItem[];
   onClose: () => void;
   onRequestMapPick: () => void;
-  onUploadAttachPhotos: (files: FileList) => Promise<PhotoItem[]>;
+  onUploadAttachPhotos: (files: FileList | File[]) => Promise<PhotoItem[]>;
   onSave: (
     data: {
       title: string;
@@ -60,6 +61,7 @@ export function WorkEntryModal({
     initialEntry?.photoIds || []
   );
   const [isUploading, setIsUploading] = useState(false);
+  const [isDragOverAttach, setIsDragOverAttach] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -74,8 +76,9 @@ export function WorkEntryModal({
     }
   };
 
-  const handleAttachFiles = async (fileList: FileList | null) => {
-    if (!fileList?.length) return;
+  const handleAttachFiles = async (fileList: FileList | File[] | null) => {
+    const count = fileList ? fileList.length : 0;
+    if (!fileList || count === 0) return;
     setIsUploading(true);
     setErrorMsg(null);
     try {
@@ -261,7 +264,45 @@ export function WorkEntryModal({
           </div>
 
           {/* Photo Attachments */}
-          <div className="space-y-2">
+          <div
+            className={`space-y-2 rounded-xl p-2.5 -mx-1 border transition-colors ${
+              isDragOverAttach
+                ? 'border-blue-500 bg-blue-50/70'
+                : 'border-transparent'
+            }`}
+            onDragEnter={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragOverAttach(true);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (e.dataTransfer) {
+                e.dataTransfer.dropEffect = 'copy';
+              }
+              setIsDragOverAttach(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setIsDragOverAttach(false);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragOverAttach(false);
+              if (e.dataTransfer) {
+                void extractFilesFromDataTransfer(e.dataTransfer).then((files) => {
+                  if (files.length > 0) {
+                    void handleAttachFiles(files);
+                  }
+                });
+              }
+            }}
+          >
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-slate-700">
                 작업 사진 첨부 ({selectedPhotoIds.length}장 선택됨)
@@ -279,7 +320,7 @@ export function WorkEntryModal({
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept="image/*,.heic,.heif"
+                accept="image/*,.heic,.heif,.hif,.avif,.tiff,.tif,.dng,.cr2,.cr3,.nef,.arw"
                 className="hidden"
                 onChange={(e) => {
                   void handleAttachFiles(e.target.files);
@@ -289,8 +330,10 @@ export function WorkEntryModal({
             </div>
 
             {photos.length === 0 ? (
-              <p className="text-xs text-slate-400 py-3 text-center border border-dashed border-slate-200 rounded-lg">
-                위 &lsquo;새 사진 추가&rsquo; 버튼으로 현장 사진을 첨부하세요. GPS가 있으면 위치도 자동 입력됩니다.
+              <p className="text-xs text-slate-400 py-4 text-center border border-dashed border-slate-200 rounded-lg">
+                {isDragOverAttach
+                  ? '여기에 놓으면 작업 기록에 바로 첨부됩니다'
+                  : '사진 파일 또는 폴더를 여기로 드래그하거나 위 ‘새 사진 추가’ 버튼을 눌러 첨부하세요.'}
               </p>
             ) : (
               <div className="grid grid-cols-5 gap-2 max-h-36 overflow-y-auto p-1 border border-slate-200 rounded-lg bg-slate-50/50">
