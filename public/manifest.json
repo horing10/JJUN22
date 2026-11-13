@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "원아공영 PhotoAtlas — GPS 사진 위치 지도",
+  "short_name": "원아공영",
+  "description": "GPS 메타데이터(EXIF)가 포함된 현장 사진을 지도에 표시하고 작업구간·경로·진행도를 관리하며 보고서를 작성하는 앱",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

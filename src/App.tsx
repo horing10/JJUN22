@@ -4,10 +4,13 @@ import {
   MergeSectionsModal,
   type MergeSectionsPayload,
 } from './components/MergeSectionsModal';
+import {OfflineIndicator} from './components/OfflineIndicator';
 import {PdfExportModal} from './components/PdfExportModal';
 import {PhotoInspector} from './components/PhotoInspector';
 import {PhotoMapViewport} from './components/PhotoMapViewport';
 import {PhotoSidebar} from './components/PhotoSidebar';
+import {PWAInstallButton} from './components/PWAInstallButton';
+import {PWAUpdatePrompt} from './components/PWAUpdatePrompt';
 import {SectionModal} from './components/SectionModal';
 import {TimelineFilterBar} from './components/TimelineFilterBar';
 import {WorkEntryModal} from './components/WorkEntryModal';
@@ -741,7 +744,7 @@ export default function App() {
 
   return (
     <div
-      className="h-screen w-screen flex flex-col overflow-hidden bg-slate-50 text-slate-900"
+      className="h-screen supports-[height:100dvh]:h-dvh w-screen flex flex-col overflow-hidden bg-slate-50 text-slate-900"
       onDragEnter={(e) => {
         e.preventDefault();
         dragCounterRef.current += 1;
@@ -831,6 +834,7 @@ export default function App() {
         </nav>
 
         <div className="flex items-center gap-2 shrink-0">
+          <PWAInstallButton />
           {(photos.length > 0 || sections.length > 0 || workEntries.length > 0) && (
             <button
               type="button"
@@ -1109,6 +1113,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      <OfflineIndicator />
+      <PWAUpdatePrompt />
     </div>
   );
 }

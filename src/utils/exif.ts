@@ -207,6 +207,71 @@ export async function reverseGeocodeCoords(
   lat: number,
   lng: number
 ): Promise<ResolvedLocation | null> {
+  // 1. Try client-side Kakao Maps Geocoder when Kakao Maps SDK is active
+  if (typeof window !== 'undefined' && window.kakao?.maps?.services?.Geocoder) {
+    const kakaoLoc = await new Promise<ResolvedLocation | null>((resolve) => {
+      try {
+        const geocoder = new window.kakao!.maps!.services.Geocoder();
+        geocoder.coord2Address(lng, lat, (result, status) => {
+          if (
+            status !== window.kakao?.maps?.services?.Status.OK ||
+            !result?.length
+          ) {
+            resolve(null);
+            return;
+          }
+
+          const first = result[0];
+          const road = first.road_address;
+          const lot = first.address;
+          const baseAddr = road?.address_name || lot?.address_name || '';
+          if (!baseAddr) {
+            resolve(null);
+            return;
+          }
+
+          const buildingSuffix = road?.building_name
+            ? ` (${road.building_name})`
+            : '';
+          const district =
+            road?.region_2depth_name ||
+            lot?.region_2depth_name ||
+            road?.region_1depth_name ||
+            lot?.region_1depth_name;
+          const town = road?.region_3depth_name || lot?.region_3depth_name;
+          const roadShort = road?.road_name
+            ? [
+                road.road_name,
+                [road.main_building_no, road.sub_building_no]
+                  .filter(Boolean)
+                  .join('-'),
+              ]
+                .filter(Boolean)
+                .join(' ')
+            : undefined;
+          const shortAddress =
+            [district, roadShort || town].filter(Boolean).join(' ') || baseAddr;
+
+          resolve({
+            formattedAddress: `${baseAddr}${buildingSuffix}`,
+            shortAddress,
+            roadAddress: road?.address_name || undefined,
+            country: '대한민국',
+            locality: district,
+            neighborhood: town,
+          });
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+
+    if (kakaoLoc) {
+      return kakaoLoc;
+    }
+  }
+
+  // 2. Fall back to server proxy (Kakao Local REST API or Nominatim)
   try {
     const res = await fetch(
       `/api/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&lang=ko`

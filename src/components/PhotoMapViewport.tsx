@@ -1,15 +1,16 @@
-import L from 'leaflet';
 import {
+  AlertCircle,
   Crosshair,
   ImagePlus,
   Layers,
+  Loader2,
   Maximize2,
   Plus,
   Route as RouteIcon,
   Upload,
   X,
 } from 'lucide-react';
-import {type MutableRefObject, useEffect, useMemo, useRef} from 'react';
+import {type MutableRefObject, useEffect, useMemo, useRef, useState} from 'react';
 import type {
   MapLayerType,
   PhotoItem,
@@ -19,8 +20,8 @@ import type {
 import {formatDecimalCoords} from '../utils/exif';
 import {formatDistance, sortSectionPhotos} from '../utils/geo';
 
-const DEFAULT_CENTER: [number, number] = [37.5665, 126.978];
-const DEFAULT_ZOOM = 11;
+const DEFAULT_CENTER = {lat: 37.5665, lng: 126.978};
+const DEFAULT_LEVEL = 7;
 
 interface SectionRouteGroup {
   sectionId: string;
@@ -71,52 +72,58 @@ const LAYER_OPTIONS: Array<{id: MapLayerType; label: string}> = [
   {id: 'terrain', label: '지형'},
 ];
 
-function createTileLayers(layer: MapLayerType): L.TileLayer[] {
-  switch (layer) {
-    case 'satellite':
-      return [
-        L.tileLayer(
-          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          {
-            maxZoom: 19,
-            attribution: '&copy; Esri, Maxar, Earthstar Geographics',
-          }
-        ),
-      ];
-    case 'hybrid':
-      return [
-        L.tileLayer(
-          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          {
-            maxZoom: 19,
-            attribution: '&copy; Esri',
-          }
-        ),
-        L.tileLayer(
-          'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',
-          {
-            subdomains: 'abcd',
-            maxZoom: 19,
-            attribution: '&copy; CARTO',
-          }
-        ),
-      ];
-    case 'terrain':
-      return [
-        L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-          maxZoom: 17,
-          attribution: '&copy; OpenStreetMap, SRTM &copy; OpenTopoMap',
-        }),
-      ];
-    case 'roadmap':
-    default:
-      return [
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          maxZoom: 19,
-          attribution: '&copy; OpenStreetMap contributors',
-        }),
-      ];
+let kakaoSdkLoadPromise: Promise<void> | null = null;
+let loadedKakaoJsKey = '';
+
+function loadKakaoMapsSdk(jsKey: string): Promise<void> {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Window unavailable'));
   }
+
+  if (window.kakao?.maps?.Map && loadedKakaoJsKey === jsKey) {
+    return Promise.resolve();
+  }
+
+  if (kakaoSdkLoadPromise && loadedKakaoJsKey === jsKey) {
+    return kakaoSdkLoadPromise;
+  }
+
+  loadedKakaoJsKey = jsKey;
+  kakaoSdkLoadPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[data-kakao-maps-sdk="true"]'
+    );
+    if (existing && window.kakao?.maps?.load) {
+      window.kakao.maps.load(() => resolve());
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(
+      jsKey
+    )}&autoload=false&libraries=services`;
+    script.async = true;
+    script.dataset.kakaoMapsSdk = 'true';
+
+    script.onload = () => {
+      if (!window.kakao?.maps?.load) {
+        kakaoSdkLoadPromise = null;
+        reject(new Error('Kakao Maps SDK loaded without kakao.maps'));
+        return;
+      }
+      window.kakao.maps.load(() => resolve());
+    };
+
+    script.onerror = () => {
+      kakaoSdkLoadPromise = null;
+      script.remove();
+      reject(new Error('Failed to load Kakao Maps SDK script'));
+    };
+
+    document.head.appendChild(script);
+  });
+
+  return kakaoSdkLoadPromise;
 }
 
 function createCheckSvg(): SVGSVGElement {
@@ -206,22 +213,28 @@ function createPhotoFallbackElement(): HTMLElement {
   return box;
 }
 
-function buildPhotoMarkerIcon(
+function buildPhotoMarkerNode(
   photo: PhotoItem & {lat: number; lng: number},
   sectionColor: string,
   isSelected: boolean,
   isHovered: boolean,
   orderIndex: number | undefined,
   showOrderBadge: boolean,
+  onClick: () => void,
   onHover: (id: string | null) => void
-): L.DivIcon {
+): HTMLElement {
   const wrapper = document.createElement('div');
   const active = isSelected || isHovered;
-  wrapper.className = `relative flex flex-col items-center cursor-pointer transition-transform duration-150 ${
+  wrapper.className = `relative flex flex-col items-center cursor-pointer transition-transform duration-150 select-none ${
     active ? 'scale-110' : 'hover:scale-105'
   }`;
+  wrapper.title = photo.location?.shortAddress || photo.fileName;
   wrapper.addEventListener('mouseenter', () => onHover(photo.id));
   wrapper.addEventListener('mouseleave', () => onHover(null));
+  wrapper.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClick();
+  });
 
   const card = document.createElement('div');
   card.className =
@@ -272,20 +285,29 @@ function buildPhotoMarkerIcon(
   tip.style.backgroundColor = sectionColor;
   wrapper.appendChild(tip);
 
-  return L.divIcon({
-    html: wrapper,
-    className: 'photoatlas-marker-icon',
-    iconSize: [48, 54],
-    iconAnchor: [24, 53],
-    popupAnchor: [0, -52],
-  });
+  return wrapper;
 }
 
 function buildPhotoPopupNode(
-  photo: PhotoItem & {lat: number; lng: number}
+  photo: PhotoItem & {lat: number; lng: number},
+  onClose: () => void
 ): HTMLElement {
   const root = document.createElement('div');
-  root.className = 'w-[228px] text-slate-900 font-sans';
+  root.className =
+    'w-[244px] bg-white border border-slate-200 rounded-xl p-2.5 shadow-xl text-slate-900 font-sans relative';
+  root.addEventListener('click', (e) => e.stopPropagation());
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.setAttribute('aria-label', '팝업 닫기');
+  closeBtn.textContent = '×';
+  closeBtn.className =
+    'absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-slate-900/70 hover:bg-slate-900 text-white text-xs flex items-center justify-center cursor-pointer leading-none z-10';
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClose();
+  });
+  root.appendChild(closeBtn);
 
   const mediaBox = document.createElement('div');
   mediaBox.className =
@@ -314,7 +336,8 @@ function buildPhotoPopupNode(
 
   if (photo.location?.formattedAddress) {
     const addr = document.createElement('p');
-    addr.className = 'text-[11px] text-slate-600 mt-0.5 leading-snug mb-0';
+    addr.className =
+      'text-[11px] text-slate-600 mt-0.5 leading-snug mb-0 whitespace-normal break-words';
     addr.textContent = photo.location.formattedAddress;
     root.appendChild(addr);
   }
@@ -329,27 +352,36 @@ function buildPhotoPopupNode(
   footer.appendChild(coords);
 
   const link = document.createElement('a');
-  link.href = `https://www.openstreetmap.org/?mlat=${photo.lat}&mlon=${photo.lng}#map=17/${photo.lat}/${photo.lng}`;
+  const label = photo.location?.shortAddress || photo.fileName;
+  link.href = `https://map.kakao.com/link/map/${encodeURIComponent(
+    label
+  )},${photo.lat},${photo.lng}`;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.className =
     'inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap shrink-0';
-  link.textContent = 'OSM';
+  link.textContent = '카카오맵';
   footer.appendChild(link);
 
   root.appendChild(footer);
   return root;
 }
 
-function buildWorkEntryMarkerIcon(
+function buildWorkEntryMarkerNode(
   entry: WorkEntry,
   sectionColor: string,
-  isSelected: boolean
-): L.DivIcon {
+  isSelected: boolean,
+  onClick: () => void
+): HTMLElement {
   const wrapper = document.createElement('div');
-  wrapper.className = `flex flex-col items-center cursor-pointer transition-transform duration-150 ${
+  wrapper.className = `flex flex-col items-center cursor-pointer transition-transform duration-150 select-none ${
     isSelected ? 'scale-110' : 'hover:scale-105'
   }`;
+  wrapper.title = entry.title;
+  wrapper.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClick();
+  });
 
   const pill = document.createElement('div');
   pill.className = `flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 text-white shadow-lg border-2 ${
@@ -382,12 +414,7 @@ function buildWorkEntryMarkerIcon(
   tip.style.backgroundColor = sectionColor;
   wrapper.appendChild(tip);
 
-  return L.divIcon({
-    html: wrapper,
-    className: 'photoatlas-entry-icon',
-    iconSize: [148, 36],
-    iconAnchor: [74, 35],
-  });
+  return wrapper;
 }
 
 function computeBearingDeg(
@@ -399,12 +426,13 @@ function computeBearingDeg(
   return (Math.atan2(dLng, dLat) * 180) / Math.PI;
 }
 
-function createDirectionArrowMarker(
+function createDirectionArrowOverlay(
   lat: number,
   lng: number,
   bearingDeg: number,
-  color: string
-): L.Marker {
+  color: string,
+  map: kakao.maps.Map
+): kakao.maps.CustomOverlay {
   const wrap = document.createElement('div');
   wrap.className = 'flex items-center justify-center pointer-events-none';
   wrap.style.transform = `rotate(${bearingDeg}deg)`;
@@ -425,15 +453,13 @@ function createDirectionArrowMarker(
   svg.appendChild(poly);
   wrap.appendChild(svg);
 
-  return L.marker([lat, lng], {
-    interactive: false,
-    keyboard: false,
-    icon: L.divIcon({
-      html: wrap,
-      className: 'photoatlas-arrow-icon',
-      iconSize: [16, 16],
-      iconAnchor: [8, 8],
-    }),
+  return new window.kakao!.maps!.CustomOverlay({
+    map,
+    position: new window.kakao!.maps!.LatLng(lat, lng),
+    content: wrap,
+    xAnchor: 0.5,
+    yAnchor: 0.5,
+    zIndex: 5,
   });
 }
 
@@ -468,21 +494,34 @@ export function PhotoMapViewport({
   onRoadDistancesComputed,
   mapCaptureRef,
 }: PhotoMapViewportProps) {
+  const [jsKey, setJsKey] = useState<string>(
+    import.meta.env.VITE_KAKAO_MAP_JS_KEY || ''
+  );
+  const [isConfigLoading, setIsConfigLoading] = useState<boolean>(
+    !import.meta.env.VITE_KAKAO_MAP_JS_KEY
+  );
+  const [sdkReady, setSdkReady] = useState(false);
+  const [sdkError, setSdkError] = useState<string | null>(null);
+  const [popupPhotoId, setPopupPhotoId] = useState<string | null>(null);
+
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<L.Map | null>(null);
-  const tileLayerGroupRef = useRef<L.LayerGroup | null>(null);
-  const routeLayerRef = useRef<L.LayerGroup | null>(null);
-  const photoLayerRef = useRef<L.LayerGroup | null>(null);
-  const entryLayerRef = useRef<L.LayerGroup | null>(null);
-  const photoMarkerByIdRef = useRef<Record<string, L.Marker>>({});
+  const mapRef = useRef<kakao.maps.Map | null>(null);
+  const terrainOverlayActiveRef = useRef(false);
+  const routePolylinesRef = useRef<kakao.maps.Polyline[]>([]);
+  const routeArrowsRef = useRef<kakao.maps.CustomOverlay[]>([]);
+  const photoOverlaysRef = useRef<kakao.maps.CustomOverlay[]>([]);
+  const entryOverlaysRef = useRef<kakao.maps.CustomOverlay[]>([]);
+  const popupOverlayRef = useRef<kakao.maps.CustomOverlay | null>(null);
   const routeCacheRef = useRef<
-    Record<string, {path: Array<{lat: number; lng: number}>; distanceMeters: number}>
+    Record<
+      string,
+      {path: Array<{lat: number; lng: number}>; distanceMeters: number}
+    >
   >({});
 
   const prevFitTriggerRef = useRef(0);
   const prevFocusTriggerRef = useRef(0);
 
-  // Refs for latest callbacks & pick state inside Leaflet click handler
   const pickStateRef = useRef({
     manualPinPhoto,
     isPickingWorkLocation,
@@ -495,6 +534,101 @@ export function PhotoMapViewport({
     onManualPinAssign,
     onPickWorkLocation,
   };
+
+  // Load Kakao Map JS Key from server config if not bundled via VITE_ env
+  useEffect(() => {
+    if (jsKey) {
+      setIsConfigLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    fetch('/api/kakao-config')
+      .then((r) => r.json())
+      .then((data: {jsKey?: string}) => {
+        if (!cancelled && data.jsKey) {
+          setJsKey(data.jsKey);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setIsConfigLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [jsKey]);
+
+  // Load Kakao Maps SDK & initialize Map instance
+  useEffect(() => {
+    if (!jsKey || !mapContainerRef.current) return;
+
+    let cancelled = false;
+    let resizeObserver: ResizeObserver | null = null;
+
+    loadKakaoMapsSdk(jsKey)
+      .then(() => {
+        if (cancelled || !mapContainerRef.current || !window.kakao?.maps) return;
+
+        const kMaps = window.kakao.maps;
+        const map = new kMaps.Map(mapContainerRef.current, {
+          center: new kMaps.LatLng(DEFAULT_CENTER.lat, DEFAULT_CENTER.lng),
+          level: DEFAULT_LEVEL,
+        });
+
+        map.addControl(
+          new kMaps.ZoomControl(),
+          kMaps.ControlPosition.BOTTOMRIGHT
+        );
+
+        kMaps.event.addListener(map, 'click', (mouseEvent: kakao.maps.MouseEvent) => {
+          const lat = mouseEvent.latLng.getLat();
+          const lng = mouseEvent.latLng.getLng();
+          const {
+            manualPinPhoto: pinPhoto,
+            isPickingWorkLocation: pickingWork,
+            onManualPinAssign: assignPin,
+            onPickWorkLocation: pickWork,
+          } = pickStateRef.current;
+
+          if (pinPhoto) {
+            assignPin(pinPhoto.id, lat, lng);
+            return;
+          }
+          if (pickingWork) {
+            pickWork(lat, lng);
+            return;
+          }
+          setPopupPhotoId(null);
+        });
+
+        mapRef.current = map;
+        setSdkError(null);
+        setSdkReady(true);
+
+        resizeObserver = new ResizeObserver(() => {
+          map.relayout();
+        });
+        resizeObserver.observe(mapContainerRef.current);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSdkError(
+            err instanceof Error
+              ? err.message
+              : '카카오맵 SDK를 불러오지 못했습니다.'
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      resizeObserver?.disconnect();
+      mapRef.current = null;
+      setSdkReady(false);
+    };
+  }, [jsKey]);
 
   const sectionColorLookup = useMemo(() => {
     const lookup: Record<string, string> = {};
@@ -571,73 +705,35 @@ export function PhotoMapViewport({
     return null;
   }, [selectedPhotoId, selectedEntryId, gpsPhotos, workEntries]);
 
-  // Initialize Leaflet map once
+  // Switch Kakao Map base type & terrain overlay
   useEffect(() => {
-    const el = mapContainerRef.current;
-    if (!el || mapRef.current) return;
+    const map = mapRef.current;
+    const kMaps = window.kakao?.maps;
+    if (!sdkReady || !map || !kMaps) return;
 
-    const map = L.map(el, {
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
-      zoomControl: false,
-      attributionControl: true,
-    });
-
-    L.control.zoom({position: 'bottomright'}).addTo(map);
-
-    const tileGroup = L.layerGroup().addTo(map);
-    const routeGroup = L.layerGroup().addTo(map);
-    const photoGroup = L.layerGroup().addTo(map);
-    const entryGroup = L.layerGroup().addTo(map);
-
-    map.on('click', (e: L.LeafletMouseEvent) => {
-      const {
-        manualPinPhoto: pinPhoto,
-        isPickingWorkLocation: pickingWork,
-        onManualPinAssign: assignPin,
-        onPickWorkLocation: pickWork,
-      } = pickStateRef.current;
-
-      if (pinPhoto) {
-        assignPin(pinPhoto.id, e.latlng.lat, e.latlng.lng);
-        return;
-      }
-      if (pickingWork) {
-        pickWork(e.latlng.lat, e.latlng.lng);
-      }
-    });
-
-    mapRef.current = map;
-    tileLayerGroupRef.current = tileGroup;
-    routeLayerRef.current = routeGroup;
-    photoLayerRef.current = photoGroup;
-    entryLayerRef.current = entryGroup;
-
-    const resizeObserver = new ResizeObserver(() => {
-      map.invalidateSize({pan: false});
-    });
-    resizeObserver.observe(el);
-
-    return () => {
-      resizeObserver.disconnect();
-      map.remove();
-      mapRef.current = null;
-      tileLayerGroupRef.current = null;
-      routeLayerRef.current = null;
-      photoLayerRef.current = null;
-      entryLayerRef.current = null;
-    };
-  }, []);
-
-  // Switch free base tile layers
-  useEffect(() => {
-    const tileGroup = tileLayerGroupRef.current;
-    if (!tileGroup) return;
-    tileGroup.clearLayers();
-    for (const layer of createTileLayers(mapLayer)) {
-      tileGroup.addLayer(layer);
+    if (terrainOverlayActiveRef.current) {
+      map.removeOverlayMapTypeId(kMaps.MapTypeId.TERRAIN);
+      terrainOverlayActiveRef.current = false;
     }
-  }, [mapLayer]);
+
+    switch (mapLayer) {
+      case 'satellite':
+        map.setMapTypeId(kMaps.MapTypeId.SKYVIEW);
+        break;
+      case 'hybrid':
+        map.setMapTypeId(kMaps.MapTypeId.HYBRID);
+        break;
+      case 'terrain':
+        map.setMapTypeId(kMaps.MapTypeId.ROADMAP);
+        map.addOverlayMapTypeId(kMaps.MapTypeId.TERRAIN);
+        terrainOverlayActiveRef.current = true;
+        break;
+      case 'roadmap':
+      default:
+        map.setMapTypeId(kMaps.MapTypeId.ROADMAP);
+        break;
+    }
+  }, [sdkReady, mapLayer]);
 
   // Update crosshair cursor during picking modes
   useEffect(() => {
@@ -647,37 +743,43 @@ export function PhotoMapViewport({
     el.style.cursor = isPicking ? 'crosshair' : '';
   }, [manualPinPhoto, isPickingWorkLocation]);
 
-  // Render section routes (cached OSRM road-snapping + directional markers)
+  // Render Section Routes (Kakao Mobility / OSRM road-snapping + directional arrows)
   useEffect(() => {
-    const routeGroup = routeLayerRef.current;
-    if (!routeGroup) return;
+    const map = mapRef.current;
+    const kMaps = window.kakao?.maps;
+    if (!sdkReady || !map || !kMaps) return;
 
-    routeGroup.clearLayers();
+    const clearRoutes = () => {
+      for (const p of routePolylinesRef.current) p.setMap(null);
+      for (const a of routeArrowsRef.current) a.setMap(null);
+      routePolylinesRef.current = [];
+      routeArrowsRef.current = [];
+    };
+
+    clearRoutes();
     if (!showSectionPaths || routeGroups.length === 0) return;
 
     let cancelled = false;
 
     const drawPath = (
-      layerBucket: L.LayerGroup,
       path: Array<{lat: number; lng: number}>,
       color: string,
       isActive: boolean,
       isRoadSnapped: boolean
     ) => {
       if (path.length < 2) return;
-      const latLngs: L.LatLngTuple[] = path.map((p) => [p.lat, p.lng]);
+      const latLngPath = path.map((p) => new kMaps.LatLng(p.lat, p.lng));
 
-      const line = L.polyline(latLngs, {
-        color,
-        weight: isActive ? 6 : 4.5,
-        opacity: isRoadSnapped ? (isActive ? 0.94 : 0.78) : 0.6,
-        dashArray: isRoadSnapped ? undefined : '6 6',
-        lineCap: 'round',
-        lineJoin: 'round',
+      const line = new kMaps.Polyline({
+        map,
+        path: latLngPath,
+        strokeWeight: isActive ? 6 : 4.5,
+        strokeColor: color,
+        strokeOpacity: isRoadSnapped ? (isActive ? 0.94 : 0.78) : 0.65,
+        strokeStyle: isRoadSnapped ? 'solid' : 'shortdash',
       });
-      layerBucket.addLayer(line);
+      routePolylinesRef.current.push(line);
 
-      // Draw directional arrows along the path
       const arrowStep = Math.max(1, Math.floor(path.length / 4));
       for (let i = 0; i < path.length - 1; i += arrowStep) {
         const a = path[i];
@@ -685,10 +787,11 @@ export function PhotoMapViewport({
         const midLat = (a.lat + b.lat) / 2;
         const midLng = (a.lng + b.lng) / 2;
         const bearing = computeBearingDeg(a, b);
-        layerBucket.addLayer(
-          createDirectionArrowMarker(midLat, midLng, bearing, color)
+        routeArrowsRef.current.push(
+          createDirectionArrowOverlay(midLat, midLng, bearing, color, map)
         );
       }
+      return line;
     };
 
     const run = async () => {
@@ -702,20 +805,22 @@ export function PhotoMapViewport({
           .map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`)
           .join('|')}`;
 
-        const groupBucket = L.layerGroup();
-        routeGroup.addLayer(groupBucket);
-
         const cached = routeCacheRef.current[sig];
         if (cached) {
-          drawPath(groupBucket, cached.path, group.color, group.isActive, true);
+          drawPath(cached.path, group.color, group.isActive, true);
           if (cached.distanceMeters > 0) {
             computedDistances[group.sectionId] = cached.distanceMeters;
           }
           continue;
         }
 
-        // Draw immediate fallback polyline while OSRM responds
-        drawPath(groupBucket, group.points, group.color, group.isActive, false);
+        // Draw dashed fallback immediately while route API responds
+        const fallbackLine = drawPath(
+          group.points,
+          group.color,
+          group.isActive,
+          false
+        );
 
         try {
           const response = await fetch('/api/route', {
@@ -742,14 +847,26 @@ export function PhotoMapViewport({
               path: data.path,
               distanceMeters: dist,
             };
-            groupBucket.clearLayers();
-            drawPath(groupBucket, data.path, group.color, group.isActive, true);
+            fallbackLine?.setMap(null);
+            // Rebuild clean overlays by removing fallback arrows/line
+            clearRoutes();
+            for (const g of routeGroups) {
+              const gSig = `${g.sectionId}:${g.points
+                .map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`)
+                .join('|')}`;
+              const gCached = routeCacheRef.current[gSig];
+              if (gCached) {
+                drawPath(gCached.path, g.color, g.isActive, true);
+              } else {
+                drawPath(g.points, g.color, g.isActive, false);
+              }
+            }
             if (dist > 0) {
               computedDistances[group.sectionId] = dist;
             }
           }
         } catch {
-          // Keep direct polyline fallback cleanly
+          // Keep direct dashed polyline fallback cleanly
         }
       }
 
@@ -762,17 +879,18 @@ export function PhotoMapViewport({
 
     return () => {
       cancelled = true;
-      routeGroup.clearLayers();
+      clearRoutes();
     };
-  }, [routeGroups, showSectionPaths, onRoadDistancesComputed]);
+  }, [sdkReady, routeGroups, showSectionPaths, onRoadDistancesComputed]);
 
   // Render Photo Markers
   useEffect(() => {
-    const photoGroup = photoLayerRef.current;
-    if (!photoGroup) return;
+    const map = mapRef.current;
+    const kMaps = window.kakao?.maps;
+    if (!sdkReady || !map || !kMaps) return;
 
-    photoGroup.clearLayers();
-    const nextById: Record<string, L.Marker> = {};
+    for (const ov of photoOverlaysRef.current) ov.setMap(null);
+    photoOverlaysRef.current = [];
 
     gpsPhotos.forEach((photo, index) => {
       const color = photo.sectionId
@@ -781,37 +899,40 @@ export function PhotoMapViewport({
       const isSelected = selectedPhotoId === photo.id;
       const isHovered = hoveredPhotoId === photo.id;
 
-      const marker = L.marker([photo.lat, photo.lng], {
-        icon: buildPhotoMarkerIcon(
-          photo,
-          color,
-          isSelected,
-          isHovered,
-          timelineOrderLookup[photo.id],
-          showSectionPaths,
-          onHoverPhoto
-        ),
-        zIndexOffset: isSelected ? 1000 : isHovered ? 800 : index,
-        title: photo.location?.shortAddress || photo.fileName,
+      const node = buildPhotoMarkerNode(
+        photo,
+        color,
+        isSelected,
+        isHovered,
+        timelineOrderLookup[photo.id],
+        showSectionPaths,
+        () => {
+          onSelectEntry(null);
+          onSelectPhoto(photo.id);
+          setPopupPhotoId(photo.id);
+        },
+        onHoverPhoto
+      );
+
+      const overlay = new kMaps.CustomOverlay({
+        map,
+        position: new kMaps.LatLng(photo.lat, photo.lng),
+        content: node,
+        xAnchor: 0.5,
+        yAnchor: 1,
+        zIndex: isSelected ? 1000 : isHovered ? 800 : 10 + index,
+        clickable: true,
       });
 
-      marker.bindPopup(buildPhotoPopupNode(photo), {
-        maxWidth: 260,
-        closeButton: true,
-        autoPanPadding: [24, 24],
-      });
-
-      marker.on('click', () => {
-        onSelectEntry(null);
-        onSelectPhoto(photo.id);
-      });
-
-      photoGroup.addLayer(marker);
-      nextById[photo.id] = marker;
+      photoOverlaysRef.current.push(overlay);
     });
 
-    photoMarkerByIdRef.current = nextById;
+    return () => {
+      for (const ov of photoOverlaysRef.current) ov.setMap(null);
+      photoOverlaysRef.current = [];
+    };
   }, [
+    sdkReady,
     gpsPhotos,
     sectionColorLookup,
     selectedPhotoId,
@@ -823,12 +944,51 @@ export function PhotoMapViewport({
     onSelectPhoto,
   ]);
 
+  // Render Photo Popup Overlay
+  useEffect(() => {
+    const map = mapRef.current;
+    const kMaps = window.kakao?.maps;
+    if (popupOverlayRef.current) {
+      popupOverlayRef.current.setMap(null);
+      popupOverlayRef.current = null;
+    }
+
+    if (!sdkReady || !map || !kMaps || !popupPhotoId) return;
+    const photo = gpsPhotos.find((p) => p.id === popupPhotoId);
+    if (!photo) return;
+
+    const popupNode = buildPhotoPopupNode(photo, () => setPopupPhotoId(null));
+    const popup = new kMaps.CustomOverlay({
+      map,
+      position: new kMaps.LatLng(photo.lat, photo.lng),
+      content: popupNode,
+      xAnchor: 0.5,
+      yAnchor: 1.32,
+      zIndex: 1200,
+      clickable: true,
+    });
+    popupOverlayRef.current = popup;
+
+    return () => {
+      popup.setMap(null);
+      popupOverlayRef.current = null;
+    };
+  }, [sdkReady, popupPhotoId, gpsPhotos]);
+
+  useEffect(() => {
+    if (!selectedPhotoId) {
+      setPopupPhotoId(null);
+    }
+  }, [selectedPhotoId]);
+
   // Render Work Entry Markers
   useEffect(() => {
-    const entryGroup = entryLayerRef.current;
-    if (!entryGroup) return;
+    const map = mapRef.current;
+    const kMaps = window.kakao?.maps;
+    if (!sdkReady || !map || !kMaps) return;
 
-    entryGroup.clearLayers();
+    for (const ov of entryOverlaysRef.current) ov.setMap(null);
+    entryOverlaysRef.current = [];
 
     for (const entry of workEntries) {
       const color = entry.sectionId
@@ -836,20 +996,31 @@ export function PhotoMapViewport({
         : '#0F172A';
       const isSelected = selectedEntryId === entry.id;
 
-      const marker = L.marker([entry.lat, entry.lng], {
-        icon: buildWorkEntryMarkerIcon(entry, color, isSelected),
-        zIndexOffset: isSelected ? 1020 : 850,
-        title: entry.title,
-      });
-
-      marker.on('click', () => {
+      const node = buildWorkEntryMarkerNode(entry, color, isSelected, () => {
         onSelectPhoto(null);
+        setPopupPhotoId(null);
         onSelectEntry(entry.id);
       });
 
-      entryGroup.addLayer(marker);
+      const overlay = new kMaps.CustomOverlay({
+        map,
+        position: new kMaps.LatLng(entry.lat, entry.lng),
+        content: node,
+        xAnchor: 0.5,
+        yAnchor: 1,
+        zIndex: isSelected ? 1020 : 850,
+        clickable: true,
+      });
+
+      entryOverlaysRef.current.push(overlay);
     }
+
+    return () => {
+      for (const ov of entryOverlaysRef.current) ov.setMap(null);
+      entryOverlaysRef.current = [];
+    };
   }, [
+    sdkReady,
     workEntries,
     sectionColorLookup,
     selectedEntryId,
@@ -860,49 +1031,46 @@ export function PhotoMapViewport({
   // Fit all points when fitTrigger changes
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    const kMaps = window.kakao?.maps;
+    if (!sdkReady || !map || !kMaps) return;
     if (fitTrigger === prevFitTriggerRef.current) return;
     prevFitTriggerRef.current = fitTrigger;
 
     if (allPoints.length === 0) return;
     if (allPoints.length === 1) {
-      map.setView([allPoints[0].lat, allPoints[0].lng], 15);
+      map.setCenter(new kMaps.LatLng(allPoints[0].lat, allPoints[0].lng));
+      map.setLevel(4);
       return;
     }
 
-    const bounds = L.latLngBounds(allPoints.map((p) => [p.lat, p.lng]));
-    map.fitBounds(bounds, {padding: [72, 72], maxZoom: 16});
-  }, [fitTrigger, allPoints]);
+    const bounds = new kMaps.LatLngBounds();
+    for (const p of allPoints) {
+      bounds.extend(new kMaps.LatLng(p.lat, p.lng));
+    }
+    map.setBounds(bounds, 72, 72, 72, 72);
+  }, [sdkReady, fitTrigger, allPoints]);
 
   // Focus selected target when focusTrigger changes
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !selectedTarget) return;
+    const kMaps = window.kakao?.maps;
+    if (!sdkReady || !map || !kMaps || !selectedTarget) return;
     if (focusTrigger === prevFocusTriggerRef.current) return;
     prevFocusTriggerRef.current = focusTrigger;
 
-    const targetZoom = Math.max(map.getZoom(), 15);
-    const reducedMotion = window.matchMedia(
-      '(prefers-reduced-motion: reduce)'
-    ).matches;
-
-    if (reducedMotion) {
-      map.setView([selectedTarget.lat, selectedTarget.lng], targetZoom);
-    } else {
-      map.flyTo([selectedTarget.lat, selectedTarget.lng], targetZoom, {
-        duration: 0.45,
-      });
+    map.panTo(new kMaps.LatLng(selectedTarget.lat, selectedTarget.lng));
+    if (map.getLevel() > 4) {
+      map.setLevel(4, {animate: true});
     }
-  }, [focusTrigger, selectedTarget]);
+  }, [sdkReady, focusTrigger, selectedTarget]);
 
-  // Register high-DPI map canvas capture for PDF report export
+  // Register high-DPI Kakao Map canvas capture for PDF report export
   useEffect(() => {
     if (!mapCaptureRef) return;
 
-    const loadCorsImg = (src: string, timeoutMs = 4000) =>
+    const loadImgSafe = (src: string, timeoutMs = 4000) =>
       new Promise<HTMLImageElement | null>((resolve) => {
         const img = new Image();
-        img.crossOrigin = 'anonymous';
         const timer = window.setTimeout(() => resolve(null), timeoutMs);
         img.onload = () => {
           window.clearTimeout(timer);
@@ -914,32 +1082,6 @@ export function PhotoMapViewport({
         };
         img.src = src;
       });
-
-    const getTileUrls = (
-      layer: MapLayerType,
-      z: number,
-      tx: number,
-      ty: number
-    ): string[] => {
-      const osmSub = ['a', 'b', 'c'][Math.abs(tx + ty) % 3];
-      const cartoSub = ['a', 'b', 'c', 'd'][Math.abs(tx + ty) % 4];
-      switch (layer) {
-        case 'satellite':
-          return [
-            `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${ty}/${tx}`,
-          ];
-        case 'hybrid':
-          return [
-            `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${ty}/${tx}`,
-            `https://${cartoSub}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/${z}/${tx}/${ty}.png`,
-          ];
-        case 'terrain':
-          return [`https://${osmSub}.tile.opentopomap.org/${z}/${tx}/${ty}.png`];
-        case 'roadmap':
-        default:
-          return [`https://${osmSub}.tile.openstreetmap.org/${z}/${tx}/${ty}.png`];
-      }
-    };
 
     const drawRoundRect = (
       ctx: CanvasRenderingContext2D,
@@ -965,73 +1107,75 @@ export function PhotoMapViewport({
 
     mapCaptureRef.current = async () => {
       const map = mapRef.current;
-      if (!map) return null;
+      const container = mapContainerRef.current;
+      const kMaps = window.kakao?.maps;
+      if (!map || !container || !kMaps) return null;
 
-      const size = map.getSize();
-      if (size.x <= 0 || size.y <= 0) return null;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
 
-      const dpr = Math.min(2, Math.max(1.5, 1400 / size.x));
+      const dpr = Math.min(2, Math.max(1.5, 1400 / rect.width));
       const canvas = document.createElement('canvas');
-      canvas.width = Math.round(size.x * dpr);
-      canvas.height = Math.round(size.y * dpr);
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
       const ctx = canvas.getContext('2d');
       if (!ctx) return null;
 
       ctx.scale(dpr, dpr);
       ctx.fillStyle = '#E2E8F0';
-      ctx.fillRect(0, 0, size.x, size.y);
+      ctx.fillRect(0, 0, rect.width, rect.height);
 
-      const maxTileZoom = mapLayer === 'terrain' ? 17 : 19;
-      const tileZoom = Math.min(Math.max(Math.round(map.getZoom()), 1), maxTileZoom);
-      const nwLatLng = map.containerPointToLatLng([0, 0]);
-      const seLatLng = map.containerPointToLatLng([size.x, size.y]);
-      const nwWorld = map.project(nwLatLng, tileZoom);
-      const seWorld = map.project(seLatLng, tileZoom);
-
-      const worldSpanX = seWorld.x - nwWorld.x;
-      const scale = worldSpanX > 0 ? size.x / worldSpanX : 1;
-
-      const maxIndex = Math.pow(2, tileZoom);
-      const minTx = Math.floor(nwWorld.x / 256);
-      const maxTx = Math.floor(seWorld.x / 256);
-      const minTy = Math.max(0, Math.floor(nwWorld.y / 256));
-      const maxTy = Math.min(maxIndex - 1, Math.floor(seWorld.y / 256));
-
-      const tileJobs: Array<{
-        dx: number;
-        dy: number;
-        dw: number;
-        dh: number;
-        urls: string[];
-      }> = [];
-
-      for (let tx = minTx; tx <= maxTx; tx++) {
-        const wrappedTx = ((tx % maxIndex) + maxIndex) % maxIndex;
-        for (let ty = minTy; ty <= maxTy; ty++) {
-          tileJobs.push({
-            dx: (tx * 256 - nwWorld.x) * scale,
-            dy: (ty * 256 - nwWorld.y) * scale,
-            dw: 256 * scale,
-            dh: 256 * scale,
-            urls: getTileUrls(mapLayer, tileZoom, wrappedTx, ty),
-          });
-        }
-      }
-
-      const loadedTiles = await Promise.all(
-        tileJobs.map(async (job) => {
-          const imgs = await Promise.all(job.urls.map((u) => loadCorsImg(u)));
-          return {job, imgs};
-        })
+      // Capture visible Kakao map tiles via same-origin allowlisted proxy
+      const tileImgs = Array.from(container.querySelectorAll('img')).filter(
+        (img) =>
+          img.complete &&
+          img.naturalWidth > 0 &&
+          /(daumcdn\.net|kakaocdn\.net)/i.test(img.src)
       );
 
-      for (const {job, imgs} of loadedTiles) {
-        for (const img of imgs) {
-          if (img) {
-            ctx.drawImage(img, job.dx, job.dy, job.dw + 0.6, job.dh + 0.6);
+      const tileJobs = tileImgs
+        .map((img) => {
+          const r = img.getBoundingClientRect();
+          const dx = r.left - rect.left;
+          const dy = r.top - rect.top;
+          if (
+            dx + r.width < 0 ||
+            dx > rect.width ||
+            dy + r.height < 0 ||
+            dy > rect.height
+          ) {
+            return null;
           }
+          return {
+            dx,
+            dy,
+            dw: r.width,
+            dh: r.height,
+            src: `/api/tile-proxy?url=${encodeURIComponent(img.src)}`,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x));
+
+      const loadedTiles = await Promise.all(
+        tileJobs.map(async (job) => ({
+          job,
+          img: await loadImgSafe(job.src, 4000),
+        }))
+      );
+
+      for (const {job, img} of loadedTiles) {
+        if (img) {
+          ctx.drawImage(img, job.dx, job.dy, job.dw + 0.5, job.dh + 0.5);
         }
       }
+
+      const projection = map.getProjection();
+      const projectPoint = (lat: number, lng: number) => {
+        const pt = projection.containerPointFromCoords(
+          new kMaps.LatLng(lat, lng)
+        );
+        return {x: pt.x, y: pt.y};
+      };
 
       // Draw Section Routes
       if (showSectionPaths) {
@@ -1042,7 +1186,7 @@ export function PhotoMapViewport({
             .join('|')}`;
           const cached = routeCacheRef.current[sig];
           const path = cached?.path?.length ? cached.path : group.points;
-          const pts = path.map((p) => map.latLngToContainerPoint([p.lat, p.lng]));
+          const pts = path.map((p) => projectPoint(p.lat, p.lng));
 
           ctx.save();
           ctx.lineCap = 'round';
@@ -1051,7 +1195,6 @@ export function PhotoMapViewport({
             ctx.setLineDash([6, 6]);
           }
 
-          // White halo
           ctx.beginPath();
           pts.forEach((pt, idx) => {
             if (idx === 0) ctx.moveTo(pt.x, pt.y);
@@ -1061,13 +1204,11 @@ export function PhotoMapViewport({
           ctx.lineWidth = (group.isActive ? 6 : 4.5) + 3;
           ctx.stroke();
 
-          // Colored route
           ctx.strokeStyle = group.color;
           ctx.lineWidth = group.isActive ? 6 : 4.5;
           ctx.stroke();
           ctx.restore();
 
-          // Directional arrows
           const step = Math.max(1, Math.floor(path.length / 4));
           for (let i = 0; i < path.length - 1; i += step) {
             const p1 = pts[i];
@@ -1097,19 +1238,19 @@ export function PhotoMapViewport({
       // Draw Photo Pins
       const photoEntries = await Promise.all(
         gpsPhotos.map(async (photo) => {
-          const pt = map.latLngToContainerPoint([photo.lat, photo.lng]);
+          const pt = projectPoint(photo.lat, photo.lng);
           if (
             pt.x < -40 ||
-            pt.x > size.x + 40 ||
+            pt.x > rect.width + 40 ||
             pt.y < -40 ||
-            pt.y > size.y + 40
+            pt.y > rect.height + 40
           ) {
             return null;
           }
           const img =
-            (await loadCorsImg(photo.previewUrl, 1500)) ||
+            (await loadImgSafe(photo.previewUrl, 1500)) ||
             (photo.fallbackPreviewUrl
-              ? await loadCorsImg(photo.fallbackPreviewUrl, 1500)
+              ? await loadImgSafe(photo.fallbackPreviewUrl, 1500)
               : null);
           return {photo, pt, img};
         })
@@ -1125,7 +1266,6 @@ export function PhotoMapViewport({
         const left = pt.x - pinSize / 2;
         const top = pt.y - pinSize - 6;
 
-        // Pointer triangle
         ctx.beginPath();
         ctx.moveTo(pt.x - 5, top + pinSize - 1);
         ctx.lineTo(pt.x + 5, top + pinSize - 1);
@@ -1134,7 +1274,6 @@ export function PhotoMapViewport({
         ctx.fillStyle = color;
         ctx.fill();
 
-        // White frame
         drawRoundRect(ctx, left, top, pinSize, pinSize, 7);
         ctx.fillStyle = '#FFFFFF';
         ctx.fill();
@@ -1142,7 +1281,6 @@ export function PhotoMapViewport({
         ctx.lineWidth = 2.5;
         ctx.stroke();
 
-        // Photo thumb crop
         if (img) {
           ctx.save();
           drawRoundRect(ctx, left + 2.5, top + 2.5, pinSize - 5, pinSize - 5, 5);
@@ -1166,7 +1304,6 @@ export function PhotoMapViewport({
           ctx.restore();
         }
 
-        // Order badge
         const orderIdx = timelineOrderLookup[photo.id];
         if (showSectionPaths && orderIdx !== undefined) {
           drawRoundRect(ctx, left + 3, top + 3, 15, 14, 3);
@@ -1179,7 +1316,6 @@ export function PhotoMapViewport({
           ctx.textAlign = 'left';
         }
 
-        // Checked badge
         if (photo.isChecked) {
           ctx.beginPath();
           ctx.arc(left + pinSize - 7, top + pinSize - 7, 6.5, 0, Math.PI * 2);
@@ -1194,12 +1330,12 @@ export function PhotoMapViewport({
       // Draw Work Entry Pins
       ctx.font = '600 11px sans-serif';
       for (const entry of workEntries) {
-        const pt = map.latLngToContainerPoint([entry.lat, entry.lng]);
+        const pt = projectPoint(entry.lat, entry.lng);
         if (
           pt.x < -80 ||
-          pt.x > size.x + 80 ||
+          pt.x > rect.width + 80 ||
           pt.y < -40 ||
-          pt.y > size.y + 40
+          pt.y > rect.height + 40
         ) {
           continue;
         }
@@ -1239,18 +1375,13 @@ export function PhotoMapViewport({
       }
 
       // Attribution tag
-      const attrText =
-        mapLayer === 'satellite' || mapLayer === 'hybrid'
-          ? '© Esri · PhotoAtlas'
-          : mapLayer === 'terrain'
-            ? '© OpenTopoMap · PhotoAtlas'
-            : '© OpenStreetMap · PhotoAtlas';
+      const attrText = '© Kakao Map · PhotoAtlas';
       ctx.font = '500 10px sans-serif';
       const attrW = ctx.measureText(attrText).width + 14;
       ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      ctx.fillRect(size.x - attrW - 6, size.y - 22, attrW, 16);
+      ctx.fillRect(rect.width - attrW - 6, rect.height - 22, attrW, 16);
       ctx.fillStyle = '#334155';
-      ctx.fillText(attrText, size.x - attrW + 1, size.y - 10);
+      ctx.fillText(attrText, rect.width - attrW + 1, rect.height - 10);
 
       try {
         return canvas.toDataURL('image/jpeg', 0.92);
@@ -1263,8 +1394,8 @@ export function PhotoMapViewport({
       mapCaptureRef.current = null;
     };
   }, [
+    sdkReady,
     mapCaptureRef,
-    mapLayer,
     showSectionPaths,
     routeGroups,
     gpsPhotos,
@@ -1274,6 +1405,8 @@ export function PhotoMapViewport({
   ]);
 
   const isPickingMode = Boolean(manualPinPhoto) || isPickingWorkLocation;
+  const currentOrigin =
+    typeof window !== 'undefined' ? window.location.origin : '';
 
   return (
     <div
@@ -1281,10 +1414,55 @@ export function PhotoMapViewport({
         isPickingMode ? 'cursor-crosshair' : ''
       }`}
     >
-      {/* Isolated stacking context keeps Leaflet's internal z-400..1000 panes below React overlays */}
+      {/* Isolated stacking context keeps Kakao Map layers below React overlays */}
       <div className="w-full h-full isolate z-0">
         <div ref={mapContainerRef} className="w-full h-full" />
       </div>
+
+      {/* Loading or Missing Kakao Map JS Key / Domain Setup Notice */}
+      {isConfigLoading ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-100 z-20">
+          <div className="flex items-center gap-2 text-sm text-slate-600">
+            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+            카카오맵을 불러오는 중입니다...
+          </div>
+        </div>
+      ) : !jsKey || sdkError ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-100/95 p-6 z-20">
+          <div className="max-w-md w-full bg-white border border-slate-200 rounded-xl p-6 shadow-md space-y-3">
+            <div className="flex items-center gap-2 text-slate-900">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+              <h2 className="text-sm font-semibold">
+                {!jsKey
+                  ? '카카오맵 JavaScript 키 설정이 필요합니다'
+                  : '카카오맵 SDK를 불러오지 못했습니다'}
+              </h2>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              카카오 디벨로퍼스(developers.kakao.com)에서 애플리케이션을 생성한 뒤 아래 두 가지를 설정해 주세요.
+            </p>
+            <ol className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5 list-decimal list-inside">
+              <li>
+                환경변수(Secrets)에{' '}
+                <code className="font-mono font-semibold text-blue-700">
+                  KAKAO_MAP_JS_KEY
+                </code>{' '}
+                (선택: 도로 경로·주소용{' '}
+                <code className="font-mono font-semibold text-slate-800">
+                  KAKAO_REST_API_KEY
+                </code>
+                ) 등록
+              </li>
+              <li>
+                카카오 디벨로퍼스 → 플랫폼 → Web 사이트 도메인에 현재 주소 등록:
+                <div className="mt-1 px-2 py-1 bg-white border border-slate-200 rounded font-mono text-[11px] text-slate-800 break-all">
+                  {currentOrigin}
+                </div>
+              </li>
+            </ol>
+          </div>
+        </div>
+      ) : null}
 
       {/* Top Floating Map Controls */}
       <div className="absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 pointer-events-none z-10">
@@ -1426,7 +1604,7 @@ export function PhotoMapViewport({
       )}
 
       {/* Initial Empty State Card over Live Map */}
-      {photos.length === 0 && workEntries.length === 0 && (
+      {sdkReady && photos.length === 0 && workEntries.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none z-10">
           <div className="pointer-events-auto max-w-md w-full bg-white/95 backdrop-blur-md border border-slate-200 rounded-xl p-6 shadow-lg text-center">
             <div className="w-11 h-11 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-3.5">
@@ -1457,7 +1635,7 @@ export function PhotoMapViewport({
               </button>
             </div>
             <p className="text-xs text-slate-400 mt-3.5">
-              OpenStreetMap 기반 무료 지도 · JPG · HEIC · PNG · WebP 지원
+              카카오맵 기반 · JPG · HEIC · PNG · WebP 지원
             </p>
           </div>
         </div>

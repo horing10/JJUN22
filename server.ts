@@ -127,7 +127,68 @@ function formatNominatimResult(data: {
 
 async function createServer() {
   const app = express();
+  app.set('trust proxy', true);
   app.use(express.json());
+
+  const getKakaoJsKey = () =>
+    process.env.KAKAO_MAP_JS_KEY ||
+    process.env.VITE_KAKAO_MAP_JS_KEY ||
+    process.env.KAKAO_JAVASCRIPT_KEY ||
+    '';
+
+  const getKakaoRestKey = () => process.env.KAKAO_REST_API_KEY || '';
+
+  app.get('/api/kakao-config', (_req, res) => {
+    res.json({
+      jsKey: getKakaoJsKey(),
+      hasRestKey: Boolean(getKakaoRestKey()),
+    });
+  });
+
+  // Safe same-origin tile proxy strictly allowlisting Kakao Map CDN tiles for PDF capture
+  app.get('/api/tile-proxy', async (req, res) => {
+    const rawUrl = typeof req.query.url === 'string' ? req.query.url : '';
+    if (!rawUrl) {
+      res.status(400).end();
+      return;
+    }
+
+    try {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.toLowerCase();
+      const allowedHost =
+        host.endsWith('.daumcdn.net') ||
+        host.endsWith('.kakaocdn.net') ||
+        host === 'daumcdn.net' ||
+        host === 'kakaocdn.net';
+
+      if (
+        !allowedHost ||
+        (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')
+      ) {
+        res.status(403).end();
+        return;
+      }
+
+      const upstream = await fetch(parsed.toString(), {
+        headers: {
+          'User-Agent': 'PhotoAtlas-FieldMapper/1.0',
+        },
+      });
+      if (!upstream.ok) {
+        res.status(upstream.status).end();
+        return;
+      }
+
+      const contentType = upstream.headers.get('content-type') || 'image/png';
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.send(buf);
+    } catch {
+      res.status(502).end();
+    }
+  });
 
   // Free Reverse Geocoding via OpenStreetMap Nominatim (no API key required)
   app.get('/api/reverse-geocode', async (req, res) => {
@@ -153,6 +214,91 @@ async function createServer() {
       return;
     }
 
+    // 1. Try Kakao Local REST API first when KAKAO_REST_API_KEY is configured
+    const kakaoRestKey = getKakaoRestKey();
+    if (kakaoRestKey) {
+      try {
+        const kakaoUrl = `https://dapi.kakao.com/v2/local/geo/coord2address.json?x=${encodeURIComponent(
+          String(lngRaw)
+        )}&y=${encodeURIComponent(String(latRaw))}&input_coord=WGS84`;
+
+        const kRes = await fetch(kakaoUrl, {
+          headers: {
+            Authorization: `KakaoAK ${kakaoRestKey}`,
+          },
+        });
+
+        if (kRes.ok) {
+          const kData = (await kRes.json()) as {
+            documents?: Array<{
+              road_address?: {
+                address_name?: string;
+                region_1depth_name?: string;
+                region_2depth_name?: string;
+                region_3depth_name?: string;
+                road_name?: string;
+                main_building_no?: string;
+                sub_building_no?: string;
+                building_name?: string;
+              } | null;
+              address?: {
+                address_name?: string;
+                region_1depth_name?: string;
+                region_2depth_name?: string;
+                region_3depth_name?: string;
+              } | null;
+            }>;
+          };
+
+          const doc = kData.documents?.[0];
+          const road = doc?.road_address;
+          const lot = doc?.address;
+          if (road?.address_name || lot?.address_name) {
+            const formattedAddress =
+              road?.address_name || lot?.address_name || '';
+            const buildingSuffix = road?.building_name
+              ? ` (${road.building_name})`
+              : '';
+            const district =
+              road?.region_2depth_name ||
+              lot?.region_2depth_name ||
+              road?.region_1depth_name ||
+              lot?.region_1depth_name;
+            const town =
+              road?.region_3depth_name || lot?.region_3depth_name;
+            const roadShort = road?.road_name
+              ? [
+                  road.road_name,
+                  [road.main_building_no, road.sub_building_no]
+                    .filter(Boolean)
+                    .join('-'),
+                ]
+                  .filter(Boolean)
+                  .join(' ')
+              : undefined;
+            const shortAddress =
+              [district, roadShort || town].filter(Boolean).join(' ') ||
+              formattedAddress;
+
+            const normalized: NormalizedLocation = {
+              formattedAddress: `${formattedAddress}${buildingSuffix}`,
+              shortAddress,
+              roadAddress: road?.address_name || undefined,
+              country: '대한민국',
+              locality: district,
+              neighborhood: town,
+            };
+            geocodeCache[cacheKey] = normalized;
+            res.json(normalized);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Kakao Local reverse geocode warning:', err);
+      }
+    }
+
+    // 2. Fallback to Nominatim when outside Korea or KAKAO_REST_API_KEY is unset
     try {
       const result = await scheduleNominatim(async () => {
         const url = new URL('https://nominatim.openstreetmap.org/reverse');
@@ -236,6 +382,91 @@ async function createServer() {
     if (routeCache[sig]) {
       res.json(routeCache[sig]);
       return;
+    }
+
+    // Try Kakao Mobility Directions API when KAKAO_REST_API_KEY is configured
+    const kakaoRestKey = getKakaoRestKey();
+    if (kakaoRestKey && trimmed.length >= 2 && trimmed.length <= 32) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 7000);
+        try {
+          let kResp: Response;
+          if (trimmed.length === 2) {
+            const origin = `${trimmed[0].lng},${trimmed[0].lat}`;
+            const destination = `${trimmed[1].lng},${trimmed[1].lat}`;
+            kResp = await fetch(
+              `https://apis-navi.kakaomobility.com/v1/directions?origin=${encodeURIComponent(
+                origin
+              )}&destination=${encodeURIComponent(destination)}`,
+              {
+                headers: {
+                  Authorization: `KakaoAK ${kakaoRestKey}`,
+                },
+                signal: controller.signal,
+              }
+            );
+          } else {
+            const origin = {x: trimmed[0].lng, y: trimmed[0].lat};
+            const destination = {
+              x: trimmed[trimmed.length - 1].lng,
+              y: trimmed[trimmed.length - 1].lat,
+            };
+            const waypoints = trimmed
+              .slice(1, -1)
+              .map((p) => ({x: p.lng, y: p.lat}));
+            kResp = await fetch(
+              'https://apis-navi.kakaomobility.com/v1/waypoints/directions',
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `KakaoAK ${kakaoRestKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({origin, destination, waypoints}),
+                signal: controller.signal,
+              }
+            );
+          }
+
+          if (kResp.ok) {
+            const kData = (await kResp.json()) as {
+              routes?: Array<{
+                result_code?: number;
+                summary?: {distance?: number};
+                sections?: Array<{
+                  roads?: Array<{vertexes?: number[]}>;
+                }>;
+              }>;
+            };
+            const route = kData.routes?.[0];
+            if (route && route.result_code === 0 && route.sections) {
+              const path: Array<{lat: number; lng: number}> = [];
+              for (const sec of route.sections) {
+                for (const road of sec.roads || []) {
+                  const v = road.vertexes || [];
+                  for (let i = 0; i + 1 < v.length; i += 2) {
+                    path.push({lat: v[i + 1], lng: v[i]});
+                  }
+                }
+              }
+              if (path.length >= 2) {
+                const result = {
+                  path,
+                  distanceMeters: Math.round(route.summary?.distance || 0),
+                };
+                routeCache[sig] = result;
+                res.json(result);
+                return;
+              }
+            }
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch (err) {
+        console.warn('Kakao Mobility directions fallback:', err);
+      }
     }
 
     const fetchOsrmChunk = async (
@@ -332,7 +563,25 @@ async function createServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        setHeaders(res, filePath) {
+          if (filePath.endsWith('manifest.json')) {
+            res.setHeader(
+              'Content-Type',
+              'application/manifest+json; charset=utf-8'
+            );
+            res.setHeader('Cache-Control', 'no-cache');
+          } else if (
+            filePath.endsWith('sw.js') ||
+            filePath.endsWith('registerSW.js')
+          ) {
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Service-Worker-Allowed', '/');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
