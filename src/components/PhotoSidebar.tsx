@@ -2,6 +2,8 @@ import {
   ArrowUpDown,
   Calendar,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Circle,
   ClipboardList,
   Download,
@@ -16,6 +18,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
+import {useEffect, useState} from 'react';
 import type {
   DateRangeFilter,
   PhotoFilter,
@@ -125,6 +128,27 @@ export function PhotoSidebar({
   const gpsCount = photos.filter((p) => p.hasGps).length;
   const noGpsCount = photos.length - gpsCount;
 
+  const [isMobileCollapsed, setIsMobileCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      Boolean((window.navigator as {standalone?: boolean}).standalone);
+    const isMobileWidth = window.innerWidth < 1024;
+    return isStandalone && isMobileWidth;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(display-mode: standalone)');
+    const handleChange = () => {
+      if (mq.matches && window.innerWidth < 1024) {
+        setIsMobileCollapsed(true);
+      }
+    };
+    mq.addEventListener?.('change', handleChange);
+    return () => mq.removeEventListener?.('change', handleChange);
+  }, []);
+
   const sectionLookup: Record<string, WorkSection> = {};
   for (const s of allSections) {
     sectionLookup[s.id] = s;
@@ -141,9 +165,13 @@ export function PhotoSidebar({
   };
 
   return (
-    <aside className="w-full lg:w-[410px] xl:w-[440px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col max-h-[48vh] lg:max-h-none lg:h-full min-h-0">
+    <aside
+      className={`w-full lg:w-[410px] xl:w-[440px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col lg:max-h-none lg:h-full min-h-0 ${
+        isMobileCollapsed ? '' : 'max-h-[48vh]'
+      }`}
+    >
       {/* Compact Dropzone */}
-      <div className="p-3.5 border-b border-slate-200">
+      <div className="p-3 sm:p-3.5 border-b border-slate-200">
         <button
           type="button"
           onClick={onTriggerUpload}
@@ -165,8 +193,36 @@ export function PhotoSidebar({
         </button>
       </div>
 
+      {/* Mobile / Installed PWA Collapse Toggle */}
+      <div className="lg:hidden px-3.5 py-1.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium text-slate-600 tabular-nums truncate">
+          구간 {sections.length} · 사진 {filteredPhotos.length} · 기록 {filteredEntries.length}
+        </span>
+        <button
+          type="button"
+          onClick={() => setIsMobileCollapsed((v) => !v)}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-100 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0 cursor-pointer shadow-2xs"
+        >
+          {isMobileCollapsed ? (
+            <>
+              <ChevronDown className="w-3.5 h-3.5 text-blue-600" />
+              작업 목록 펼치기
+            </>
+          ) : (
+            <>
+              <ChevronUp className="w-3.5 h-3.5 text-slate-600" />
+              목록 접고 지도 크게 보기
+            </>
+          )}
+        </button>
+      </div>
+
       {/* Period Filter Bar */}
-      <div className="px-3.5 py-2.5 border-b border-slate-200 bg-slate-50/80 space-y-2">
+      <div
+        className={`px-3.5 py-2.5 border-b border-slate-200 bg-slate-50/80 space-y-2 ${
+          isMobileCollapsed ? 'hidden lg:block' : 'block'
+        }`}
+      >
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
             <Calendar className="w-3.5 h-3.5 text-slate-500" />
@@ -231,7 +287,11 @@ export function PhotoSidebar({
       </div>
 
       {/* Workspace Tabs */}
-      <div className="px-3.5 pt-2 border-b border-slate-200 flex items-center gap-4 text-xs font-medium">
+      <div
+        className={`px-3.5 pt-2 border-b border-slate-200 items-center gap-4 text-xs font-medium ${
+          isMobileCollapsed ? 'hidden lg:flex' : 'flex'
+        }`}
+      >
         <button
           type="button"
           onClick={() => onTabChange('sections')}
@@ -269,7 +329,11 @@ export function PhotoSidebar({
 
       {/* TAB 1: WORK SECTIONS & PROGRESS */}
       {activeTab === 'sections' && (
-        <div className="flex-1 min-h-0 flex flex-col">
+        <div
+          className={`flex-1 min-h-0 flex-col ${
+            isMobileCollapsed ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
           <div className="px-3.5 py-2 border-b border-slate-100 flex items-center justify-between gap-2">
             <button
               type="button"
@@ -423,7 +487,11 @@ export function PhotoSidebar({
 
       {/* TAB 2: PHOTO LIST */}
       {activeTab === 'photos' && (
-        <div className="flex-1 min-h-0 flex flex-col">
+        <div
+          className={`flex-1 min-h-0 flex-col ${
+            isMobileCollapsed ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
           <div className="px-3.5 py-2 border-b border-slate-200 flex items-center justify-between gap-2 bg-slate-50/60">
             <div className="flex items-center gap-1 p-0.5 bg-slate-200/70 rounded-lg">
               <button
@@ -580,6 +648,7 @@ export function PhotoSidebar({
                         <span className="text-[11px] text-slate-400 tabular-nums truncate">
                           {photo.exif.dateTimeOriginal ||
                             `${getPhotoDateKey(photo)} · ${formatFileSize(photo.fileSize)}`}
+                          {photo.uploadedByName ? ` · ${photo.uploadedByName}` : ''}
                         </span>
                         {allSections.length > 0 && (
                           <select
@@ -612,7 +681,11 @@ export function PhotoSidebar({
 
       {/* TAB 3: WORK ENTRIES WITH ATTACHED PHOTOS */}
       {activeTab === 'entries' && (
-        <div className="flex-1 min-h-0 flex flex-col">
+        <div
+          className={`flex-1 min-h-0 flex-col ${
+            isMobileCollapsed ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
           <div className="px-3.5 py-2 border-b border-slate-100 flex items-center justify-between">
             <span className="text-xs text-slate-500">
               지도 위치별 작업 내역 및 첨부 사진
@@ -700,6 +773,12 @@ export function PhotoSidebar({
                       <span>{entry.workDate}</span>
                       <span aria-hidden="true">·</span>
                       <span>첨부 {entry.photoIds.length}장</span>
+                      {entry.createdByName && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>{entry.createdByName}</span>
+                        </>
+                      )}
                       {sec && (
                         <>
                           <span aria-hidden="true">·</span>
@@ -719,7 +798,11 @@ export function PhotoSidebar({
 
       {/* Footer Utility Strip */}
       {(photos.length > 0 || sections.length > 0 || workEntries.length > 0) && (
-        <div className="px-3.5 py-2 border-t border-slate-200 bg-slate-50/70 flex items-center justify-between gap-2 text-xs">
+        <div
+          className={`px-3.5 py-2 border-t border-slate-200 bg-slate-50/70 items-center justify-between gap-2 text-xs ${
+            isMobileCollapsed ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
           <button
             type="button"
             onClick={onClearAll}

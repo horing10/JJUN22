@@ -1,0 +1,308 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isWorkspaceMember(workspaceId) {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    function isWorkspaceOwner(workspaceId) {
+      return isVerifiedUser() &&
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+    }
+
+    function isValidUserWorkspaceLink(data, userId, workspaceId) {
+      return data.keys().hasAll(['workspaceId', 'workspaceName', 'userId', 'joinedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'workspaceName', 'userId', 'joinedAt']) &&
+        isValidId(data.workspaceId) &&
+        data.workspaceId == workspaceId &&
+        data.workspaceName is string && data.workspaceName.size() >= 1 && data.workspaceName.size() <= 120 &&
+        data.userId is string && data.userId == userId &&
+        data.joinedAt is timestamp;
+    }
+
+    function isValidWorkspace(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'ownerName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['name', 'ownerId', 'ownerName', 'createdAt', 'updatedAt']) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        isValidId(data.ownerId) &&
+        data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceMember(data, memberId) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'joinedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'joinedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == memberId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.role in ['owner', 'member'] &&
+        data.joinedAt is timestamp;
+    }
+
+    function isValidSection(data, sectionId) {
+      return data.keys().hasAll(['id', 'name', 'color', 'status', 'startDate', 'endDate', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'color', 'status', 'startDate', 'endDate', 'targetDistanceMeters', 'targetPhotoCount', 'memo', 'createdBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == sectionId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.color is string && data.color.size() >= 1 && data.color.size() <= 32 &&
+        data.status in ['planned', 'in_progress', 'completed'] &&
+        data.startDate is string && data.startDate.size() <= 20 &&
+        data.endDate is string && data.endDate.size() <= 20 &&
+        (!('targetDistanceMeters' in data) || (data.targetDistanceMeters is number && data.targetDistanceMeters >= 0)) &&
+        (!('targetPhotoCount' in data) || (data.targetPhotoCount is number && data.targetPhotoCount >= 0)) &&
+        (!('memo' in data) || (data.memo is string && data.memo.size() <= 2000)) &&
+        isValidId(data.createdBy) &&
+        data.createdAt is number &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPhoto(data, photoId) {
+      return data.keys().hasAll(['id', 'fileName', 'fileSize', 'mimeType', 'uploadedAt', 'hasGps', 'exif', 'isChecked', 'uploadedBy', 'uploadedByName', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'fileName', 'fileSize', 'mimeType', 'uploadedAt', 'hasGps', 'isManualLocation', 'lat', 'lng', 'exif', 'locationFormatted', 'locationShort', 'sectionId', 'routeOrder', 'workEntryId', 'teamName', 'isChecked', 'uploadedBy', 'uploadedByName', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == photoId &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
+        data.fileSize is number && data.fileSize >= 0 &&
+        data.mimeType is string && data.mimeType.size() <= 100 &&
+        data.uploadedAt is number &&
+        data.hasGps is bool &&
+        (!('isManualLocation' in data) || data.isManualLocation is bool) &&
+        (!('lat' in data) || (data.lat is number && data.lat >= -90 && data.lat <= 90)) &&
+        (!('lng' in data) || (data.lng is number && data.lng >= -180 && data.lng <= 180)) &&
+        data.exif is map &&
+        data.exif.keys().hasOnly(['make', 'model', 'lensModel', 'dateTimeOriginal', 'timestampMs', 'focalLength', 'fNumber', 'exposureTime', 'iso', 'width', 'height', 'altitude', 'heading']) &&
+        (!('locationFormatted' in data) || (data.locationFormatted is string && data.locationFormatted.size() <= 400)) &&
+        (!('locationShort' in data) || (data.locationShort is string && data.locationShort.size() <= 200)) &&
+        (!('sectionId' in data) || (data.sectionId is string && data.sectionId.size() <= 128)) &&
+        (!('routeOrder' in data) || data.routeOrder is number) &&
+        (!('workEntryId' in data) || (data.workEntryId is string && data.workEntryId.size() <= 128)) &&
+        (!('teamName' in data) || (data.teamName is string && data.teamName.size() <= 80)) &&
+        data.isChecked is bool &&
+        isValidId(data.uploadedBy) &&
+        data.uploadedByName is string && data.uploadedByName.size() >= 1 && data.uploadedByName.size() <= 80 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPhotoMedia(data, photoId) {
+      return data.keys().hasAll(['photoId', 'dataUrl', 'uploadedBy', 'createdAt']) &&
+        data.keys().hasOnly(['photoId', 'dataUrl', 'uploadedBy', 'createdAt']) &&
+        isValidId(data.photoId) &&
+        data.photoId == photoId &&
+        data.dataUrl is string && data.dataUrl.size() >= 10 && data.dataUrl.size() <= 750000 &&
+        isValidId(data.uploadedBy) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidWorkEntry(data, entryId) {
+      return data.keys().hasAll(['id', 'title', 'description', 'teamName', 'workDate', 'status', 'lat', 'lng', 'photoIds', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'title', 'description', 'teamName', 'workDate', 'status', 'sectionId', 'lat', 'lng', 'locationFormatted', 'locationShort', 'photoIds', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == entryId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.description is string && data.description.size() <= 4000 &&
+        data.teamName is string && data.teamName.size() <= 80 &&
+        data.workDate is string && data.workDate.size() <= 20 &&
+        data.status in ['planned', 'in_progress', 'completed'] &&
+        (!('sectionId' in data) || (data.sectionId is string && data.sectionId.size() <= 128)) &&
+        data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+        data.lng is number && data.lng >= -180 && data.lng <= 180 &&
+        (!('locationFormatted' in data) || (data.locationFormatted is string && data.locationFormatted.size() <= 400)) &&
+        (!('locationShort' in data) || (data.locationShort is string && data.locationShort.size() <= 200)) &&
+        data.photoIds is list && data.photoIds.size() <= 50 &&
+        (data.photoIds.size() == 0 || data.photoIds[0] is string) &&
+        isValidId(data.createdBy) &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 80 &&
+        data.createdAt is number &&
+        data.updatedAt is timestamp;
+    }
+
+    match /users/{userId}/workspaces/{workspaceId} {
+      allow get: if isVerifiedUser() && request.auth.uid == userId && isValidId(workspaceId);
+      allow list: if isVerifiedUser() && request.auth.uid == userId && resource.data.userId == request.auth.uid;
+      allow create: if isVerifiedUser() &&
+        request.auth.uid == userId &&
+        isValidId(workspaceId) &&
+        isValidUserWorkspaceLink(incoming(), userId, workspaceId) &&
+        incoming().joinedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        request.auth.uid == userId &&
+        isValidId(workspaceId) &&
+        isValidUserWorkspaceLink(incoming(), userId, workspaceId) &&
+        incoming().workspaceId == existing().workspaceId &&
+        incoming().userId == existing().userId &&
+        incoming().joinedAt == existing().joinedAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['workspaceName']);
+      allow delete: if isVerifiedUser() && request.auth.uid == userId && isValidId(workspaceId);
+    }
+
+    match /workspaces/{workspaceId} {
+      // Allow lookup by exact invite workspaceId for joining, never allow workspace list scraping
+      allow get: if isVerifiedUser() && isValidId(workspaceId);
+      allow list: if false;
+      allow create: if isVerifiedUser() &&
+        isValidId(workspaceId) &&
+        isValidWorkspace(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isWorkspaceOwner(workspaceId) &&
+        isValidId(workspaceId) &&
+        isValidWorkspace(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'ownerName', 'updatedAt']);
+      allow delete: if isWorkspaceOwner(workspaceId) && isValidId(workspaceId);
+
+      match /members/{memberId} {
+        allow get: if isVerifiedUser() && isValidId(workspaceId) && isValidId(memberId) && (
+          memberId == request.auth.uid || isWorkspaceMember(workspaceId)
+        );
+        allow list: if isVerifiedUser() && isValidId(workspaceId) &&
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(memberId) &&
+          memberId == request.auth.uid &&
+          isValidWorkspaceMember(incoming(), memberId) &&
+          incoming().uid == request.auth.uid &&
+          incoming().joinedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+          (
+            incoming().role == 'member' ||
+            (incoming().role == 'owner' && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid)
+          );
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(memberId) &&
+          memberId == request.auth.uid &&
+          isWorkspaceMember(workspaceId) &&
+          isValidWorkspaceMember(incoming(), memberId) &&
+          incoming().uid == existing().uid &&
+          incoming().role == existing().role &&
+          incoming().joinedAt == existing().joinedAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName']);
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(memberId) && (
+          memberId == request.auth.uid || isWorkspaceOwner(workspaceId)
+        );
+      }
+
+      match /sections/{sectionId} {
+        allow get: if isValidId(workspaceId) && isValidId(sectionId) && isWorkspaceMember(workspaceId);
+        allow list: if isValidId(workspaceId) && isWorkspaceMember(workspaceId);
+        allow create: if isValidId(workspaceId) &&
+          isValidId(sectionId) &&
+          isWorkspaceMember(workspaceId) &&
+          isValidSection(incoming(), sectionId) &&
+          incoming().createdBy == request.auth.uid &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(workspaceId) &&
+          isValidId(sectionId) &&
+          isWorkspaceMember(workspaceId) &&
+          isValidSection(incoming(), sectionId) &&
+          incoming().id == existing().id &&
+          incoming().createdBy == existing().createdBy &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'color', 'status', 'startDate', 'endDate',
+            'targetDistanceMeters', 'targetPhotoCount', 'memo', 'updatedAt'
+          ]);
+        allow delete: if isValidId(workspaceId) && isValidId(sectionId) && isWorkspaceMember(workspaceId);
+      }
+
+      match /photos/{photoId} {
+        allow get: if isValidId(workspaceId) && isValidId(photoId) && isWorkspaceMember(workspaceId);
+        allow list: if isValidId(workspaceId) && isWorkspaceMember(workspaceId);
+        allow create: if isValidId(workspaceId) &&
+          isValidId(photoId) &&
+          isWorkspaceMember(workspaceId) &&
+          isValidPhoto(incoming(), photoId) &&
+          incoming().uploadedBy == request.auth.uid &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(workspaceId) &&
+          isValidId(photoId) &&
+          isWorkspaceMember(workspaceId) &&
+          isValidPhoto(incoming(), photoId) &&
+          incoming().id == existing().id &&
+          incoming().uploadedBy == existing().uploadedBy &&
+          incoming().uploadedByName == existing().uploadedByName &&
+          incoming().uploadedAt == existing().uploadedAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'isManualLocation', 'lat', 'lng', 'locationFormatted', 'locationShort',
+            'sectionId', 'routeOrder', 'workEntryId', 'teamName', 'isChecked', 'updatedAt'
+          ]);
+        allow delete: if isValidId(workspaceId) && isValidId(photoId) && isWorkspaceMember(workspaceId);
+      }
+
+      match /photoMedia/{photoId} {
+        allow get: if isValidId(workspaceId) && isValidId(photoId) && isWorkspaceMember(workspaceId);
+        allow list: if isValidId(workspaceId) && isWorkspaceMember(workspaceId);
+        allow create: if isValidId(workspaceId) &&
+          isValidId(photoId) &&
+          isWorkspaceMember(workspaceId) &&
+          isValidPhotoMedia(incoming(), photoId) &&
+          incoming().uploadedBy == request.auth.uid &&
+          incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(workspaceId) && isValidId(photoId) && isWorkspaceMember(workspaceId);
+      }
+
+      match /workEntries/{entryId} {
+        allow get: if isValidId(workspaceId) && isValidId(entryId) && isWorkspaceMember(workspaceId);
+        allow list: if isValidId(workspaceId) && isWorkspaceMember(workspaceId);
+        allow create: if isValidId(workspaceId) &&
+          isValidId(entryId) &&
+          isWorkspaceMember(workspaceId) &&
+          isValidWorkEntry(incoming(), entryId) &&
+          incoming().createdBy == request.auth.uid &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(workspaceId) &&
+          isValidId(entryId) &&
+          isWorkspaceMember(workspaceId) &&
+          isValidWorkEntry(incoming(), entryId) &&
+          incoming().id == existing().id &&
+          incoming().createdBy == existing().createdBy &&
+          incoming().createdByName == existing().createdByName &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'description', 'teamName', 'workDate', 'status',
+            'sectionId', 'lat', 'lng', 'locationFormatted', 'locationShort',
+            'photoIds', 'updatedAt'
+          ]);
+        allow delete: if isValidId(workspaceId) && isValidId(entryId) && isWorkspaceMember(workspaceId);
+      }
+    }
+  }
+}

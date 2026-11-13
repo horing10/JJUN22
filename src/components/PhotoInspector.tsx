@@ -116,6 +116,7 @@ export function PhotoInspector({
             <p className="text-xs text-slate-500 mt-1 tabular-nums">
               {workEntry.teamName} · {workEntry.workDate}
               {sec ? ` · ${sec.name}` : ''}
+              {workEntry.createdByName ? ` · 작성: ${workEntry.createdByName}` : ''}
             </p>
           </div>
 
@@ -453,6 +454,12 @@ export function PhotoInspector({
                 : ''}
               {formatFileSize(photo.fileSize)}
             </dd>
+            {photo.uploadedByName && (
+              <>
+                <dt className="text-slate-400">올린 사람</dt>
+                <dd className="text-slate-700 truncate">{photo.uploadedByName}</dd>
+              </>
+            )}
           </dl>
         </div>
       </div>

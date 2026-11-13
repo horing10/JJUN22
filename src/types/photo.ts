@@ -56,6 +56,8 @@ export interface PhotoItem {
   workEntryId?: string;
   teamName?: string;
   isChecked?: boolean;
+  uploadedBy?: string;
+  uploadedByName?: string;
 }
 
 export interface WorkSection {
@@ -69,6 +71,7 @@ export interface WorkSection {
   targetPhotoCount?: number;
   memo?: string;
   createdAt: number;
+  createdBy?: string;
 }
 
 export interface WorkEntry {
@@ -85,6 +88,8 @@ export interface WorkEntry {
   isGeocoding?: boolean;
   photoIds: string[];
   createdAt: number;
+  createdBy?: string;
+  createdByName?: string;
 }
 
 export interface DateRangeFilter {

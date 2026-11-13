@@ -1,4 +1,5 @@
-import {FileText, ImagePlus, Upload} from 'lucide-react';
+import {onAuthStateChanged, type User} from 'firebase/auth';
+import {FileText, ImagePlus, Upload, Users} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   MergeSectionsModal,
@@ -12,8 +13,10 @@ import {PhotoSidebar} from './components/PhotoSidebar';
 import {PWAInstallButton} from './components/PWAInstallButton';
 import {PWAUpdatePrompt} from './components/PWAUpdatePrompt';
 import {SectionModal} from './components/SectionModal';
+import {TeamWorkspaceModal} from './components/TeamWorkspaceModal';
 import {TimelineFilterBar} from './components/TimelineFilterBar';
 import {WorkEntryModal} from './components/WorkEntryModal';
+import {auth} from './firebase';
 import type {
   DateRangeFilter,
   MapLayerType,
@@ -40,6 +43,24 @@ import {
   type SectionProgressSummary,
 } from './utils/geo';
 import {
+  clearSharedWorkspaceItems,
+  createSharedPhoto,
+  createSharedSection,
+  createSharedWorkEntry,
+  isValidWorkspaceId,
+  joinSharedWorkspace,
+  removeSharedPhoto,
+  removeSharedSection,
+  removeSharedWorkEntry,
+  sanitizeFirestoreId,
+  subscribeToSharedWorkspace,
+  updateSharedPhotoFields,
+  updateSharedSection,
+  updateSharedWorkEntryFields,
+  type WorkspaceMemberInfo,
+  type WorkspaceSummary,
+} from './utils/sharedWorkspace';
+import {
   clearAllWorkspaceStorage,
   deletePhotoBlob,
   loadWorkspaceState,
@@ -47,11 +68,27 @@ import {
   saveWorkspaceState,
 } from './utils/storage';
 
+const ACTIVE_WORKSPACE_STORAGE_KEY = 'photoatlas_active_workspace_v1';
+
 export default function App() {
-  const [photos, setPhotos] = useState<PhotoItem[]>([]);
-  const [sections, setSections] = useState<WorkSection[]>([]);
-  const [workEntries, setWorkEntries] = useState<WorkEntry[]>([]);
+  const [localPhotos, setLocalPhotos] = useState<PhotoItem[]>([]);
+  const [localSections, setLocalSections] = useState<WorkSection[]>([]);
+  const [localWorkEntries, setLocalWorkEntries] = useState<WorkEntry[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
+
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [activeWorkspace, setActiveWorkspace] =
+    useState<WorkspaceSummary | null>(null);
+  const [sharedPhotosRaw, setSharedPhotosRaw] = useState<PhotoItem[]>([]);
+  const [sharedSections, setSharedSections] = useState<WorkSection[]>([]);
+  const [sharedWorkEntries, setSharedWorkEntries] = useState<WorkEntry[]>([]);
+  const [sharedMediaLookup, setSharedMediaLookup] = useState<
+    Record<string, string>
+  >({});
+  const [sharedMembers, setSharedMembers] = useState<WorkspaceMemberInfo[]>([]);
+  const [geocodingIds, setGeocodingIds] = useState<Record<string, boolean>>({});
+  const [teamModalOpen, setTeamModalOpen] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
 
   const [activeTab, setActiveTab] = useState<SidebarTab>('sections');
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
@@ -100,21 +137,66 @@ export default function App() {
   const mapCaptureRef = useRef<(() => Promise<string | null>) | null>(null);
   const dragCounterRef = useRef(0);
   const photosRef = useRef<PhotoItem[]>([]);
+  const sectionsRef = useRef<WorkSection[]>([]);
+  const workEntriesRef = useRef<WorkEntry[]>([]);
+  const localPreviewUrlsRef = useRef<
+    Map<string, {previewUrl: string; fallbackPreviewUrl?: string}>
+  >(new Map());
+  const pendingInviteWsIdRef = useRef<string | null>(
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('ws')?.trim() || null
+      : null
+  );
+
+  const isSharedMode = Boolean(currentUser && activeWorkspace);
+
+  const photos = useMemo<PhotoItem[]>(() => {
+    if (!isSharedMode) return localPhotos;
+    return sharedPhotosRaw.map((p) => {
+      const localCached = localPreviewUrlsRef.current.get(p.id);
+      const sharedUrl = sharedMediaLookup[p.id];
+      return {
+        ...p,
+        previewUrl: localCached?.previewUrl || sharedUrl || p.previewUrl || '',
+        fallbackPreviewUrl:
+          sharedUrl || localCached?.fallbackPreviewUrl || p.fallbackPreviewUrl,
+        isGeocoding: Boolean(geocodingIds[p.id]),
+      };
+    });
+  }, [isSharedMode, localPhotos, sharedPhotosRaw, sharedMediaLookup, geocodingIds]);
+
+  const sections = isSharedMode ? sharedSections : localSections;
+
+  const workEntries = useMemo<WorkEntry[]>(() => {
+    if (!isSharedMode) return localWorkEntries;
+    return sharedWorkEntries.map((e) => ({
+      ...e,
+      isGeocoding: Boolean(geocodingIds[e.id]),
+    }));
+  }, [isSharedMode, localWorkEntries, sharedWorkEntries, geocodingIds]);
 
   useEffect(() => {
     photosRef.current = photos;
   }, [photos]);
 
-  // Hydrate persisted workspace from IndexedDB
+  useEffect(() => {
+    sectionsRef.current = sections;
+  }, [sections]);
+
+  useEffect(() => {
+    workEntriesRef.current = workEntries;
+  }, [workEntries]);
+
+  // Hydrate local persisted workspace from IndexedDB
   useEffect(() => {
     let active = true;
     loadWorkspaceState()
       .then((saved) => {
         if (!active) return;
         if (saved) {
-          setPhotos(saved.photos);
-          setSections(saved.sections);
-          setWorkEntries(saved.workEntries);
+          setLocalPhotos(saved.photos);
+          setLocalSections(saved.sections);
+          setLocalWorkEntries(saved.workEntries);
           if (saved.photos.some((p) => p.hasGps) || saved.workEntries.length > 0) {
             setFitTrigger((n) => n + 1);
           }
@@ -128,27 +210,211 @@ export default function App() {
     };
   }, []);
 
-  // Persist workspace changes to IndexedDB
+  // Persist local-only workspace changes to IndexedDB
   useEffect(() => {
-    if (!isHydrated) return;
-    void saveWorkspaceState(photos, sections, workEntries);
-  }, [photos, sections, workEntries, isHydrated]);
+    if (!isHydrated || isSharedMode) return;
+    void saveWorkspaceState(localPhotos, localSections, localWorkEntries);
+  }, [localPhotos, localSections, localWorkEntries, isHydrated, isSharedMode]);
+
+  // Firebase Auth & Invite/Saved Workspace Auto-Connect
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (!user) {
+        setActiveWorkspace(null);
+        setSharedPhotosRaw([]);
+        setSharedSections([]);
+        setSharedWorkEntries([]);
+        setSharedMediaLookup({});
+        setSharedMembers([]);
+        if (
+          pendingInviteWsIdRef.current &&
+          isValidWorkspaceId(pendingInviteWsIdRef.current)
+        ) {
+          setTeamModalOpen(true);
+          setUploadNotice(
+            '공유 작업공간 초대를 받았습니다. Google 로그인 후 바로 팀과 함께 볼 수 있습니다.'
+          );
+        }
+        return;
+      }
+
+      const inviteId = pendingInviteWsIdRef.current;
+      const savedId =
+        typeof window !== 'undefined'
+          ? window.localStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY)
+          : null;
+      const targetId =
+        inviteId && isValidWorkspaceId(inviteId)
+          ? inviteId
+          : savedId && isValidWorkspaceId(savedId)
+            ? savedId
+            : null;
+
+      if (!targetId) return;
+
+      try {
+        const joined = await joinSharedWorkspace(user, targetId);
+        setActiveWorkspace(joined);
+        window.localStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, joined.workspaceId);
+        if (inviteId) {
+          pendingInviteWsIdRef.current = null;
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.delete('ws');
+          window.history.replaceState({}, '', nextUrl.toString());
+          setUploadNotice(
+            `"${joined.name}" 공유 작업공간에 참여했습니다. 팀원들이 올린 사진을 실시간으로 볼 수 있습니다.`
+          );
+        }
+        setFitTrigger((n) => n + 1);
+      } catch {
+        if (savedId === targetId) {
+          window.localStorage.removeItem(ACTIVE_WORKSPACE_STORAGE_KEY);
+        }
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Real-time Firestore sync when connected to a shared workspace
+  useEffect(() => {
+    if (!currentUser || !activeWorkspace) return;
+    const unsub = subscribeToSharedWorkspace(activeWorkspace.workspaceId, {
+      onSections: setSharedSections,
+      onPhotos: setSharedPhotosRaw,
+      onPhotoMedia: setSharedMediaLookup,
+      onWorkEntries: setSharedWorkEntries,
+      onMembers: setSharedMembers,
+    });
+    return () => unsub();
+  }, [currentUser, activeWorkspace?.workspaceId]);
 
   useEffect(() => {
     return () => {
-      for (const p of photosRef.current) {
+      for (const p of localPhotos) {
         URL.revokeObjectURL(p.previewUrl);
         if (p.fallbackPreviewUrl?.startsWith('blob:')) {
           URL.revokeObjectURL(p.fallbackPreviewUrl);
         }
       }
+      for (const cached of localPreviewUrlsRef.current.values()) {
+        if (cached.previewUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(cached.previewUrl);
+        }
+        if (cached.fallbackPreviewUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(cached.fallbackPreviewUrl);
+        }
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const migrateLocalDataToWorkspace = useCallback(
+    async (wsId: string, user: User) => {
+      if (
+        localSections.length === 0 &&
+        localPhotos.length === 0 &&
+        localWorkEntries.length === 0
+      ) {
+        return;
+      }
+      setIsMigrating(true);
+      try {
+        for (const sec of localSections) {
+          await createSharedSection(wsId, user, sec);
+        }
+        for (const photo of localPhotos) {
+          localPreviewUrlsRef.current.set(photo.id, {
+            previewUrl: photo.previewUrl,
+            fallbackPreviewUrl: photo.fallbackPreviewUrl,
+          });
+          await createSharedPhoto(wsId, user, photo);
+        }
+        for (const entry of localWorkEntries) {
+          await createSharedWorkEntry(wsId, user, entry);
+        }
+      } finally {
+        setIsMigrating(false);
+      }
+    },
+    [localSections, localPhotos, localWorkEntries]
+  );
+
+  const handleSelectWorkspace = useCallback(
+    async (ws: WorkspaceSummary, migrateLocal = false) => {
+      setActiveWorkspace(ws);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, ws.workspaceId);
+      }
+      if (migrateLocal && currentUser) {
+        await migrateLocalDataToWorkspace(ws.workspaceId, currentUser);
+      }
+      setActiveSectionId(null);
+      setSelectedPhotoId(null);
+      setSelectedEntryId(null);
+      setFitTrigger((n) => n + 1);
+      setUploadNotice(`"${ws.name}" 공유 작업공간과 실시간 연결되었습니다.`);
+    },
+    [currentUser, migrateLocalDataToWorkspace]
+  );
+
+  const handleDisconnectWorkspace = useCallback(() => {
+    setActiveWorkspace(null);
+    setSharedPhotosRaw([]);
+    setSharedSections([]);
+    setSharedWorkEntries([]);
+    setSharedMediaLookup({});
+    setSharedMembers([]);
+    setActiveSectionId(null);
+    setSelectedPhotoId(null);
+    setSelectedEntryId(null);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(ACTIVE_WORKSPACE_STORAGE_KEY);
+    }
+    setUploadNotice('로컬 모드로 전환했습니다.');
   }, []);
 
   const enrichPhotoLocation = useCallback(
     async (photoId: string, lat: number, lng: number) => {
+      if (isSharedMode && activeWorkspace) {
+        setGeocodingIds((prev) => ({...prev, [photoId]: true}));
+        try {
+          const location = await reverseGeocodeCoords(lat, lng);
+          if (location) {
+            await updateSharedPhotoFields(activeWorkspace.workspaceId, photoId, {
+              locationFormatted: location.formattedAddress || null,
+              locationShort: location.shortAddress || null,
+            });
+            if (location.locality || location.shortAddress) {
+              const targetPhoto = photosRef.current.find((p) => p.id === photoId);
+              if (targetPhoto?.sectionId) {
+                const sec = sectionsRef.current.find(
+                  (s) => s.id === targetPhoto.sectionId
+                );
+                if (sec && /^작업구간 \d+$/.test(sec.name)) {
+                  const idx = sectionsRef.current.findIndex(
+                    (s) => s.id === sec.id
+                  );
+                  await updateSharedSection(activeWorkspace.workspaceId, {
+                    ...sec,
+                    name: `${idx + 1}구간 · ${location.locality || location.shortAddress}`,
+                  });
+                }
+              }
+            }
+          }
+        } finally {
+          setGeocodingIds((prev) => {
+            const next = {...prev};
+            delete next[photoId];
+            return next;
+          });
+        }
+        return;
+      }
+
       const location = await reverseGeocodeCoords(lat, lng);
-      setPhotos((prev) =>
+      setLocalPhotos((prev) =>
         prev.map((p) =>
           p.id === photoId
             ? {
@@ -160,7 +426,7 @@ export default function App() {
         )
       );
       if (location?.locality || location?.shortAddress) {
-        setSections((prevSections) =>
+        setLocalSections((prevSections) =>
           prevSections.map((sec) => {
             if (/^작업구간 \d+$/.test(sec.name)) {
               const targetPhoto = photosRef.current.find(
@@ -179,13 +445,37 @@ export default function App() {
         );
       }
     },
-    []
+    [isSharedMode, activeWorkspace]
   );
 
   const enrichEntryLocation = useCallback(
     async (entryId: string, lat: number, lng: number) => {
+      if (isSharedMode && activeWorkspace) {
+        setGeocodingIds((prev) => ({...prev, [entryId]: true}));
+        try {
+          const location = await reverseGeocodeCoords(lat, lng);
+          if (location) {
+            await updateSharedWorkEntryFields(
+              activeWorkspace.workspaceId,
+              entryId,
+              {
+                locationFormatted: location.formattedAddress || null,
+                locationShort: location.shortAddress || null,
+              }
+            );
+          }
+        } finally {
+          setGeocodingIds((prev) => {
+            const next = {...prev};
+            delete next[entryId];
+            return next;
+          });
+        }
+        return;
+      }
+
       const location = await reverseGeocodeCoords(lat, lng);
-      setWorkEntries((prev) =>
+      setLocalWorkEntries((prev) =>
         prev.map((e) =>
           e.id === entryId
             ? {
@@ -197,7 +487,7 @@ export default function App() {
         )
       );
     },
-    []
+    [isSharedMode, activeWorkspace]
   );
 
   const processPhotoFiles = useCallback(
@@ -220,23 +510,80 @@ export default function App() {
         const parsedItems = await Promise.all(
           files.map(async (file) => {
             const parsed = await parsePhotoFile(file);
-            await savePhotoBlob(parsed.id, file);
+            if (isSharedMode) {
+              localPreviewUrlsRef.current.set(parsed.id, {
+                previewUrl: parsed.previewUrl,
+                fallbackPreviewUrl: parsed.fallbackPreviewUrl,
+              });
+            } else {
+              await savePhotoBlob(parsed.id, file);
+            }
             return parsed;
           })
         );
 
         let nextPhotos = [...parsedItems, ...photosRef.current];
+        const currentSections = sectionsRef.current;
 
-        if (autoCluster) {
+        if (isSharedMode && activeWorkspace && currentUser) {
+          let nextSections = currentSections;
+          let assignments: Record<string, string> = {};
+
+          if (autoCluster) {
+            const clustered = autoClusterPhotosIntoSections(
+              nextPhotos,
+              currentSections
+            );
+            nextSections = clustered.sections;
+            assignments = clustered.assignments;
+            nextPhotos = nextPhotos.map((p) =>
+              assignments[p.id] ? {...p, sectionId: assignments[p.id]} : p
+            );
+
+            const existingIds = new Set(currentSections.map((s) => s.id));
+            await Promise.all(
+              nextSections.map((sec) =>
+                existingIds.has(sec.id)
+                  ? updateSharedSection(activeWorkspace.workspaceId, sec)
+                  : createSharedSection(activeWorkspace.workspaceId, currentUser, sec)
+              )
+            );
+          }
+
+          const parsedWithAssignments = parsedItems.map((item) =>
+            assignments[item.id] ? {...item, sectionId: assignments[item.id]} : item
+          );
+
+          await Promise.all(
+            parsedWithAssignments.map((item) =>
+              createSharedPhoto(activeWorkspace.workspaceId, currentUser, item)
+            )
+          );
+
+          // Also persist any newly assigned sectionIds for previously unassigned shared photos
+          const existingPhotoSet = new Set(photosRef.current.map((p) => p.id));
+          const updatedOldPhotos = nextPhotos.filter(
+            (p) => existingPhotoSet.has(p.id) && assignments[p.id]
+          );
+          if (updatedOldPhotos.length > 0) {
+            await Promise.all(
+              updatedOldPhotos.map((p) =>
+                updateSharedPhotoFields(activeWorkspace.workspaceId, p.id, {
+                  sectionId: p.sectionId || null,
+                })
+              )
+            );
+          }
+        } else if (autoCluster) {
           const {sections: nextSections, assignments} =
-            autoClusterPhotosIntoSections(nextPhotos, sections);
+            autoClusterPhotosIntoSections(nextPhotos, currentSections);
           nextPhotos = nextPhotos.map((p) =>
             assignments[p.id] ? {...p, sectionId: assignments[p.id]} : p
           );
-          setSections(nextSections);
-          setPhotos(nextPhotos);
+          setLocalSections(nextSections);
+          setLocalPhotos(nextPhotos);
         } else {
-          setPhotos(nextPhotos);
+          setLocalPhotos(nextPhotos);
         }
 
         const gpsItems = parsedItems.filter((item) => item.hasGps);
@@ -245,7 +592,9 @@ export default function App() {
           setSelectedPhotoId(gpsItems[0].id);
           setFitTrigger((n) => n + 1);
           setUploadNotice(
-            `${parsedItems.length}장 중 ${gpsItems.length}장의 GPS를 분석해 작업구간과 경로를 지도에 표시했습니다.`
+            isSharedMode
+              ? `${parsedItems.length}장의 사진을 팀 공유방에 업로드하고 GPS 경로를 표시했습니다.`
+              : `${parsedItems.length}장 중 ${gpsItems.length}장의 GPS를 분석해 작업구간과 경로를 지도에 표시했습니다.`
           );
         } else if (parsedItems.length > 0) {
           setSelectedEntryId(null);
@@ -266,26 +615,51 @@ export default function App() {
         setIsParsing(false);
       }
     },
-    [sections, enrichPhotoLocation]
+    [isSharedMode, activeWorkspace, currentUser, enrichPhotoLocation]
   );
 
   const handleTriggerUpload = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
 
-  const handleAutoClusterSections = useCallback(() => {
+  const handleAutoClusterSections = useCallback(async () => {
+    const currentPhotos = photosRef.current;
+    const currentSections = sectionsRef.current;
     const {sections: nextSections, assignments} = autoClusterPhotosIntoSections(
-      photos,
+      currentPhotos,
       []
     );
-    setSections(nextSections);
-    setPhotos((prev) =>
-      prev.map((p) =>
-        assignments[p.id]
-          ? {...p, sectionId: assignments[p.id], routeOrder: undefined}
-          : {...p, routeOrder: undefined}
-      )
-    );
+
+    if (isSharedMode && activeWorkspace && currentUser) {
+      await Promise.all(
+        currentSections.map((s) =>
+          removeSharedSection(activeWorkspace.workspaceId, s.id)
+        )
+      );
+      await Promise.all(
+        nextSections.map((s) =>
+          createSharedSection(activeWorkspace.workspaceId, currentUser, s)
+        )
+      );
+      await Promise.all(
+        currentPhotos.map((p) =>
+          updateSharedPhotoFields(activeWorkspace.workspaceId, p.id, {
+            sectionId: assignments[p.id] || null,
+            routeOrder: null,
+          })
+        )
+      );
+    } else {
+      setLocalSections(nextSections);
+      setLocalPhotos((prev) =>
+        prev.map((p) =>
+          assignments[p.id]
+            ? {...p, sectionId: assignments[p.id], routeOrder: undefined}
+            : {...p, routeOrder: undefined}
+        )
+      );
+    }
+
     setRoadDistances({});
     setActiveSectionId(null);
     setShowSectionPaths(true);
@@ -293,20 +667,20 @@ export default function App() {
     setUploadNotice(
       `GPS 위치와 촬영 시간을 분석해 ${nextSections.length}개의 작업구간으로 자동 정리했습니다.`
     );
-  }, [photos]);
+  }, [isSharedMode, activeWorkspace, currentUser]);
 
   const handleSelectPhoto = useCallback(
     (id: string | null) => {
       setSelectedEntryId(null);
       setSelectedPhotoId(id);
       if (id) {
-        const target = photos.find((p) => p.id === id);
+        const target = photosRef.current.find((p) => p.id === id);
         if (target?.hasGps) {
           setFocusTrigger((n) => n + 1);
         }
       }
     },
-    [photos]
+    []
   );
 
   const handleSelectEntry = useCallback(
@@ -320,37 +694,83 @@ export default function App() {
     []
   );
 
-  const handleDeletePhoto = useCallback((id: string) => {
-    void deletePhotoBlob(id);
-    setPhotos((prev) => {
-      const target = prev.find((p) => p.id === id);
-      if (target) {
-        URL.revokeObjectURL(target.previewUrl);
-        if (target.fallbackPreviewUrl?.startsWith('blob:')) {
-          URL.revokeObjectURL(target.fallbackPreviewUrl);
+  const handleDeletePhoto = useCallback(
+    async (id: string) => {
+      if (isSharedMode && activeWorkspace) {
+        const cached = localPreviewUrlsRef.current.get(id);
+        if (cached) {
+          if (cached.previewUrl.startsWith('blob:')) {
+            URL.revokeObjectURL(cached.previewUrl);
+          }
+          if (cached.fallbackPreviewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(cached.fallbackPreviewUrl);
+          }
+          localPreviewUrlsRef.current.delete(id);
         }
+        await removeSharedPhoto(activeWorkspace.workspaceId, id);
+        const affectedEntries = workEntriesRef.current.filter((e) =>
+          e.photoIds.includes(id)
+        );
+        await Promise.all(
+          affectedEntries.map((e) =>
+            updateSharedWorkEntryFields(activeWorkspace.workspaceId, e.id, {
+              photoIds: e.photoIds.filter((pid) => pid !== id),
+            })
+          )
+        );
+      } else {
+        void deletePhotoBlob(id);
+        setLocalPhotos((prev) => {
+          const target = prev.find((p) => p.id === id);
+          if (target) {
+            URL.revokeObjectURL(target.previewUrl);
+            if (target.fallbackPreviewUrl?.startsWith('blob:')) {
+              URL.revokeObjectURL(target.fallbackPreviewUrl);
+            }
+          }
+          return prev.filter((p) => p.id !== id);
+        });
+        setLocalWorkEntries((prev) =>
+          prev.map((e) => ({
+            ...e,
+            photoIds: e.photoIds.filter((pid) => pid !== id),
+          }))
+        );
       }
-      return prev.filter((p) => p.id !== id);
-    });
-    setWorkEntries((prev) =>
-      prev.map((e) => ({
-        ...e,
-        photoIds: e.photoIds.filter((pid) => pid !== id),
-      }))
-    );
-    setSelectedPhotoId((prev) => (prev === id ? null : prev));
-    setManualPinPhotoId((prev) => (prev === id ? null : prev));
-  }, []);
 
-  const handleTogglePhotoChecked = useCallback((id: string) => {
-    setPhotos((prev) =>
-      prev.map((p) => (p.id === id ? {...p, isChecked: !p.isChecked} : p))
-    );
-  }, []);
+      setSelectedPhotoId((prev) => (prev === id ? null : prev));
+      setManualPinPhotoId((prev) => (prev === id ? null : prev));
+    },
+    [isSharedMode, activeWorkspace]
+  );
+
+  const handleTogglePhotoChecked = useCallback(
+    async (id: string) => {
+      if (isSharedMode && activeWorkspace) {
+        const target = photosRef.current.find((p) => p.id === id);
+        if (!target) return;
+        await updateSharedPhotoFields(activeWorkspace.workspaceId, id, {
+          isChecked: !target.isChecked,
+        });
+        return;
+      }
+      setLocalPhotos((prev) =>
+        prev.map((p) => (p.id === id ? {...p, isChecked: !p.isChecked} : p))
+      );
+    },
+    [isSharedMode, activeWorkspace]
+  );
 
   const handleAssignPhotoSection = useCallback(
-    (photoId: string, sectionId: string) => {
-      setPhotos((prev) =>
+    async (photoId: string, sectionId: string) => {
+      if (isSharedMode && activeWorkspace) {
+        await updateSharedPhotoFields(activeWorkspace.workspaceId, photoId, {
+          sectionId: sectionId || null,
+          routeOrder: null,
+        });
+        return;
+      }
+      setLocalPhotos((prev) =>
         prev.map((p) =>
           p.id === photoId
             ? {...p, sectionId: sectionId || undefined, routeOrder: undefined}
@@ -358,13 +778,41 @@ export default function App() {
         )
       );
     },
-    []
+    [isSharedMode, activeWorkspace]
   );
 
   const handleSaveSection = useCallback(
-    (data: Omit<WorkSection, 'id' | 'createdAt'>, existingId?: string) => {
-      if (existingId) {
-        setSections((prev) =>
+    async (data: Omit<WorkSection, 'id' | 'createdAt'>, existingId?: string) => {
+      if (isSharedMode && activeWorkspace && currentUser) {
+        if (existingId) {
+          const existing = sectionsRef.current.find((s) => s.id === existingId);
+          if (existing) {
+            await updateSharedSection(activeWorkspace.workspaceId, {
+              ...existing,
+              ...data,
+            });
+          }
+        } else {
+          const newSection: WorkSection = {
+            ...data,
+            id: sanitizeFirestoreId(
+              typeof crypto !== 'undefined' && crypto.randomUUID
+                ? crypto.randomUUID()
+                : `sec-${Date.now()}`
+            ),
+            color:
+              data.color ||
+              SECTION_COLORS[sectionsRef.current.length % SECTION_COLORS.length],
+            createdAt: Date.now(),
+          };
+          await createSharedSection(
+            activeWorkspace.workspaceId,
+            currentUser,
+            newSection
+          );
+        }
+      } else if (existingId) {
+        setLocalSections((prev) =>
           prev.map((s) => (s.id === existingId ? {...s, ...data} : s))
         );
       } else {
@@ -374,34 +822,61 @@ export default function App() {
             typeof crypto !== 'undefined' && crypto.randomUUID
               ? crypto.randomUUID()
               : `sec-${Date.now()}`,
-          color: data.color || SECTION_COLORS[sections.length % SECTION_COLORS.length],
+          color:
+            data.color ||
+            SECTION_COLORS[sectionsRef.current.length % SECTION_COLORS.length],
           createdAt: Date.now(),
         };
-        setSections((prev) => [...prev, newSection]);
+        setLocalSections((prev) => [...prev, newSection]);
       }
       setSectionModalOpen(false);
       setEditingSection(null);
     },
-    [sections.length]
+    [isSharedMode, activeWorkspace, currentUser]
   );
 
-  const handleDeleteSection = useCallback((sectionId: string) => {
-    setSections((prev) => prev.filter((s) => s.id !== sectionId));
-    setPhotos((prev) =>
-      prev.map((p) =>
-        p.sectionId === sectionId ? {...p, sectionId: undefined} : p
-      )
-    );
-    setWorkEntries((prev) =>
-      prev.map((e) =>
-        e.sectionId === sectionId ? {...e, sectionId: undefined} : e
-      )
-    );
-    setActiveSectionId((prev) => (prev === sectionId ? null : prev));
-  }, []);
+  const handleDeleteSection = useCallback(
+    async (sectionId: string) => {
+      if (isSharedMode && activeWorkspace) {
+        await removeSharedSection(activeWorkspace.workspaceId, sectionId);
+        const affectedPhotos = photosRef.current.filter(
+          (p) => p.sectionId === sectionId
+        );
+        const affectedEntries = workEntriesRef.current.filter(
+          (e) => e.sectionId === sectionId
+        );
+        await Promise.all([
+          ...affectedPhotos.map((p) =>
+            updateSharedPhotoFields(activeWorkspace.workspaceId, p.id, {
+              sectionId: null,
+            })
+          ),
+          ...affectedEntries.map((e) =>
+            updateSharedWorkEntryFields(activeWorkspace.workspaceId, e.id, {
+              sectionId: null,
+            })
+          ),
+        ]);
+      } else {
+        setLocalSections((prev) => prev.filter((s) => s.id !== sectionId));
+        setLocalPhotos((prev) =>
+          prev.map((p) =>
+            p.sectionId === sectionId ? {...p, sectionId: undefined} : p
+          )
+        );
+        setLocalWorkEntries((prev) =>
+          prev.map((e) =>
+            e.sectionId === sectionId ? {...e, sectionId: undefined} : e
+          )
+        );
+      }
+      setActiveSectionId((prev) => (prev === sectionId ? null : prev));
+    },
+    [isSharedMode, activeWorkspace]
+  );
 
   const handleMergeSections = useCallback(
-    (payload: MergeSectionsPayload) => {
+    async (payload: MergeSectionsPayload) => {
       const {
         orderedSectionIds,
         connectionMode,
@@ -418,7 +893,6 @@ export default function App() {
       const targetSectionId = orderedSectionIds[0];
       const absorbedSet = new Set(orderedSectionIds);
 
-      // Include unassigned GPS photos temporarily if requested
       const workingPhotos = photosRef.current.map((p) => {
         if (absorbedSet.has(p.sectionId || '')) return p;
         if (includeUnassignedGps && p.hasGps && !p.sectionId) {
@@ -453,36 +927,64 @@ export default function App() {
         (p) => p.sectionId === targetSectionId
       ).length;
 
-      setSections((prev) => {
-        const primary = prev.find((s) => s.id === targetSectionId);
-        const existingMemos = prev
-          .filter((s) => absorbedSet.has(s.id) && s.memo)
-          .map((s) => s.memo as string);
-        const mergedSection: WorkSection = {
-          id: targetSectionId,
-          name,
-          color,
-          status,
-          startDate,
-          endDate,
-          targetPhotoCount: mergedPhotoCount || primary?.targetPhotoCount,
-          memo: memo || existingMemos.join(' / ') || undefined,
-          createdAt: primary?.createdAt || Date.now(),
-        };
-        return prev
-          .filter((s) => !absorbedSet.has(s.id) || s.id === targetSectionId)
-          .map((s) => (s.id === targetSectionId ? mergedSection : s));
-      });
+      const primary = sectionsRef.current.find((s) => s.id === targetSectionId);
+      const existingMemos = sectionsRef.current
+        .filter((s) => absorbedSet.has(s.id) && s.memo)
+        .map((s) => s.memo as string);
+      const mergedSection: WorkSection = {
+        id: targetSectionId,
+        name,
+        color,
+        status,
+        startDate,
+        endDate,
+        targetPhotoCount: mergedPhotoCount || primary?.targetPhotoCount,
+        memo: memo || existingMemos.join(' / ') || undefined,
+        createdAt: primary?.createdAt || Date.now(),
+      };
 
-      setPhotos(nextPhotos);
-
-      setWorkEntries((prev) =>
-        prev.map((e) =>
-          e.sectionId && absorbedSet.has(e.sectionId)
-            ? {...e, sectionId: targetSectionId}
-            : e
-        )
-      );
+      if (isSharedMode && activeWorkspace) {
+        await updateSharedSection(activeWorkspace.workspaceId, mergedSection);
+        const removedSectionIds = orderedSectionIds.filter(
+          (id) => id !== targetSectionId
+        );
+        const affectedPhotos = nextPhotos.filter(
+          (p) => p.sectionId === targetSectionId
+        );
+        const affectedEntries = workEntriesRef.current.filter(
+          (e) => e.sectionId && absorbedSet.has(e.sectionId)
+        );
+        await Promise.all([
+          ...removedSectionIds.map((sid) =>
+            removeSharedSection(activeWorkspace.workspaceId, sid)
+          ),
+          ...affectedPhotos.map((p) =>
+            updateSharedPhotoFields(activeWorkspace.workspaceId, p.id, {
+              sectionId: targetSectionId,
+              routeOrder: p.routeOrder ?? null,
+            })
+          ),
+          ...affectedEntries.map((e) =>
+            updateSharedWorkEntryFields(activeWorkspace.workspaceId, e.id, {
+              sectionId: targetSectionId,
+            })
+          ),
+        ]);
+      } else {
+        setLocalSections((prev) =>
+          prev
+            .filter((s) => !absorbedSet.has(s.id) || s.id === targetSectionId)
+            .map((s) => (s.id === targetSectionId ? mergedSection : s))
+        );
+        setLocalPhotos(nextPhotos);
+        setLocalWorkEntries((prev) =>
+          prev.map((e) =>
+            e.sectionId && absorbedSet.has(e.sectionId)
+              ? {...e, sectionId: targetSectionId}
+              : e
+          )
+        );
+      }
 
       setRoadDistances((prev) => {
         const next = {...prev};
@@ -500,11 +1002,11 @@ export default function App() {
         `${orderedSectionIds.length}개 작업구간(${mergedPhotoCount}장)을 "${name}"으로 합쳐 도로 경로를 연결했습니다.`
       );
     },
-    []
+    [isSharedMode, activeWorkspace]
   );
 
   const handleSaveWorkEntry = useCallback(
-    (
+    async (
       data: {
         title: string;
         description: string;
@@ -520,40 +1022,80 @@ export default function App() {
     ) => {
       const id =
         existingId ||
-        (typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `work-${Date.now()}`);
-
-      if (existingId) {
-        setWorkEntries((prev) =>
-          prev.map((e) =>
-            e.id === existingId
-              ? {
-                  ...e,
-                  ...data,
-                  isGeocoding: true,
-                }
-              : e
-          )
+        sanitizeFirestoreId(
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `work-${Date.now()}`
         );
+
+      if (isSharedMode && activeWorkspace && currentUser) {
+        if (existingId) {
+          await updateSharedWorkEntryFields(activeWorkspace.workspaceId, existingId, {
+            title: data.title,
+            description: data.description,
+            teamName: data.teamName,
+            workDate: data.workDate,
+            status: data.status,
+            sectionId: data.sectionId || null,
+            lat: data.lat,
+            lng: data.lng,
+            photoIds: data.photoIds,
+          });
+        } else {
+          const newEntry: WorkEntry = {
+            id,
+            ...data,
+            createdAt: Date.now(),
+          };
+          await createSharedWorkEntry(
+            activeWorkspace.workspaceId,
+            currentUser,
+            newEntry
+          );
+        }
+
+        if (data.sectionId && data.photoIds.length > 0) {
+          await Promise.all(
+            data.photoIds.map((pid) =>
+              updateSharedPhotoFields(activeWorkspace.workspaceId, pid, {
+                sectionId: data.sectionId || null,
+                workEntryId: id,
+              })
+            )
+          );
+        }
       } else {
-        const newEntry: WorkEntry = {
-          id,
-          ...data,
-          isGeocoding: true,
-          createdAt: Date.now(),
-        };
-        setWorkEntries((prev) => [newEntry, ...prev]);
-      }
+        if (existingId) {
+          setLocalWorkEntries((prev) =>
+            prev.map((e) =>
+              e.id === existingId
+                ? {
+                    ...e,
+                    ...data,
+                    isGeocoding: true,
+                  }
+                : e
+            )
+          );
+        } else {
+          const newEntry: WorkEntry = {
+            id,
+            ...data,
+            isGeocoding: true,
+            createdAt: Date.now(),
+          };
+          setLocalWorkEntries((prev) => [newEntry, ...prev]);
+        }
 
-      if (data.sectionId && data.photoIds.length > 0) {
-        setPhotos((prev) =>
-          prev.map((p) =>
-            data.photoIds.includes(p.id)
-              ? {...p, sectionId: data.sectionId, workEntryId: id}
-              : p
-          )
-        );
+        if (data.sectionId && data.photoIds.length > 0) {
+          setLocalPhotos((prev) =>
+            prev.map((p) =>
+              data.photoIds.includes(p.id)
+                ? {...p, sectionId: data.sectionId, workEntryId: id}
+                : p
+            )
+          );
+        }
       }
 
       setWorkModalOpen(false);
@@ -565,69 +1107,116 @@ export default function App() {
       setFocusTrigger((n) => n + 1);
       void enrichEntryLocation(id, data.lat, data.lng);
     },
-    [enrichEntryLocation]
+    [isSharedMode, activeWorkspace, currentUser, enrichEntryLocation]
   );
 
-  const handleToggleEntryStatus = useCallback((entryId: string) => {
-    setWorkEntries((prev) =>
-      prev.map((e) =>
-        e.id === entryId
-          ? {
-              ...e,
-              status: e.status === 'completed' ? 'in_progress' : 'completed',
-            }
-          : e
-      )
-    );
-  }, []);
-
-  const handleDeleteEntry = useCallback((entryId: string) => {
-    setWorkEntries((prev) => prev.filter((e) => e.id !== entryId));
-    setSelectedEntryId((prev) => (prev === entryId ? null : prev));
-  }, []);
-
-  const handleClearAll = useCallback(() => {
-    for (const p of photosRef.current) {
-      URL.revokeObjectURL(p.previewUrl);
-      if (p.fallbackPreviewUrl?.startsWith('blob:')) {
-        URL.revokeObjectURL(p.fallbackPreviewUrl);
+  const handleToggleEntryStatus = useCallback(
+    async (entryId: string) => {
+      if (isSharedMode && activeWorkspace) {
+        const target = workEntriesRef.current.find((e) => e.id === entryId);
+        if (!target) return;
+        await updateSharedWorkEntryFields(activeWorkspace.workspaceId, entryId, {
+          status: target.status === 'completed' ? 'in_progress' : 'completed',
+        });
+        return;
       }
+      setLocalWorkEntries((prev) =>
+        prev.map((e) =>
+          e.id === entryId
+            ? {
+                ...e,
+                status: e.status === 'completed' ? 'in_progress' : 'completed',
+              }
+            : e
+        )
+      );
+    },
+    [isSharedMode, activeWorkspace]
+  );
+
+  const handleDeleteEntry = useCallback(
+    async (entryId: string) => {
+      if (isSharedMode && activeWorkspace) {
+        await removeSharedWorkEntry(activeWorkspace.workspaceId, entryId);
+      } else {
+        setLocalWorkEntries((prev) => prev.filter((e) => e.id !== entryId));
+      }
+      setSelectedEntryId((prev) => (prev === entryId ? null : prev));
+    },
+    [isSharedMode, activeWorkspace]
+  );
+
+  const handleClearAll = useCallback(async () => {
+    if (isSharedMode && activeWorkspace) {
+      await clearSharedWorkspaceItems(
+        activeWorkspace.workspaceId,
+        sectionsRef.current.map((s) => s.id),
+        photosRef.current.map((p) => p.id),
+        workEntriesRef.current.map((e) => e.id)
+      );
+      for (const cached of localPreviewUrlsRef.current.values()) {
+        if (cached.previewUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(cached.previewUrl);
+        }
+        if (cached.fallbackPreviewUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(cached.fallbackPreviewUrl);
+        }
+      }
+      localPreviewUrlsRef.current.clear();
+    } else {
+      for (const p of localPhotos) {
+        URL.revokeObjectURL(p.previewUrl);
+        if (p.fallbackPreviewUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(p.fallbackPreviewUrl);
+        }
+      }
+      void clearAllWorkspaceStorage();
+      setLocalPhotos([]);
+      setLocalSections([]);
+      setLocalWorkEntries([]);
     }
-    void clearAllWorkspaceStorage();
-    setPhotos([]);
-    setSections([]);
-    setWorkEntries([]);
+
     setActiveSectionId(null);
     setSelectedPhotoId(null);
     setSelectedEntryId(null);
     setManualPinPhotoId(null);
     setRoadDistances({});
     setUploadNotice(null);
-  }, []);
+  }, [isSharedMode, activeWorkspace, localPhotos]);
 
   const handleManualPinAssign = useCallback(
-    (photoId: string, lat: number, lng: number) => {
-      setPhotos((prev) =>
-        prev.map((p) =>
-          p.id === photoId
-            ? {
-                ...p,
-                hasGps: true,
-                isManualLocation: true,
-                lat,
-                lng,
-                isGeocoding: true,
-                location: undefined,
-              }
-            : p
-        )
-      );
+    async (photoId: string, lat: number, lng: number) => {
+      if (isSharedMode && activeWorkspace) {
+        await updateSharedPhotoFields(activeWorkspace.workspaceId, photoId, {
+          isManualLocation: true,
+          lat,
+          lng,
+          locationFormatted: null,
+          locationShort: null,
+        });
+      } else {
+        setLocalPhotos((prev) =>
+          prev.map((p) =>
+            p.id === photoId
+              ? {
+                  ...p,
+                  hasGps: true,
+                  isManualLocation: true,
+                  lat,
+                  lng,
+                  isGeocoding: true,
+                  location: undefined,
+                }
+              : p
+          )
+        );
+      }
       setManualPinPhotoId(null);
       setSelectedPhotoId(photoId);
       setFocusTrigger((n) => n + 1);
       void enrichPhotoLocation(photoId, lat, lng);
     },
-    [enrichPhotoLocation]
+    [isSharedMode, activeWorkspace, enrichPhotoLocation]
   );
 
   const handleRoadDistancesComputed = useCallback(
@@ -839,13 +1428,34 @@ export default function App() {
           </button>
         </nav>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <PWAInstallButton />
+          <button
+            type="button"
+            onClick={() => setTeamModalOpen(true)}
+            title={
+              activeWorkspace
+                ? `${activeWorkspace.name} 실시간 공유 중`
+                : '여러 명이 함께 보는 팀 공유방 연결'
+            }
+            className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-lg border text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              isSharedMode
+                ? 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+                : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <Users className="w-4 h-4 shrink-0" />
+            <span>
+              {isSharedMode
+                ? `${sharedMembers.length || 1}명 공유`
+                : '팀 공유'}
+            </span>
+          </button>
           {(photos.length > 0 || sections.length > 0 || workEntries.length > 0) && (
             <button
               type="button"
               onClick={() => setPdfModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <FileText className="w-4 h-4 text-blue-600" />
               <span className="hidden sm:inline">PDF 보고서</span>
@@ -854,7 +1464,7 @@ export default function App() {
           <button
             type="button"
             onClick={handleTriggerUpload}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Upload className="w-4 h-4" />
             사진 업로드
@@ -949,7 +1559,7 @@ export default function App() {
 
         <section
           aria-label="지도 뷰포트"
-          className="flex-1 relative min-h-[360px] lg:min-h-0 h-full"
+          className="flex-1 relative min-h-[280px] lg:min-h-0 h-full"
         >
           <PhotoMapViewport
             photos={visiblePhotosOnMap}
@@ -1105,6 +1715,34 @@ export default function App() {
           sectionProgressLookup={sectionProgressLookup}
           onClose={() => setMergeModalOpen(false)}
           onMerge={handleMergeSections}
+        />
+      )}
+
+      {teamModalOpen && (
+        <TeamWorkspaceModal
+          currentUser={currentUser}
+          activeWorkspace={activeWorkspace}
+          members={sharedMembers}
+          hasLocalData={
+            localPhotos.length > 0 ||
+            localSections.length > 0 ||
+            localWorkEntries.length > 0
+          }
+          isMigrating={isMigrating}
+          onClose={() => setTeamModalOpen(false)}
+          onSelectWorkspace={handleSelectWorkspace}
+          onDisconnectWorkspace={handleDisconnectWorkspace}
+          onMigrateLocalToActive={async () => {
+            if (currentUser && activeWorkspace) {
+              await migrateLocalDataToWorkspace(
+                activeWorkspace.workspaceId,
+                currentUser
+              );
+              setUploadNotice(
+                '현재 기기에 있던 작업구간·사진·기록을 공유방에 올렸습니다.'
+              );
+            }
+          }}
         />
       )}
 

@@ -1,0 +1,363 @@
+{
+  "entities": {
+    "UserWorkspaceLink": {
+      "title": "UserWorkspaceLink",
+      "description": "Private index of shared workspaces joined by a specific user.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "workspaceName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "workspaceName", "userId", "joinedAt"]
+    },
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Shared team workspace for collaborative GPS photo mapping and work sections.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["name", "ownerId", "ownerName", "createdAt", "updatedAt"]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Non-PII membership record authorizing a user within a shared workspace.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "member"]
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "role", "joinedAt"]
+    },
+    "SharedSection": {
+      "title": "SharedSection",
+      "description": "Work section definition synced across all workspace team members.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "status": {
+          "type": "string",
+          "enum": ["planned", "in_progress", "completed"]
+        },
+        "startDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "endDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "targetDistanceMeters": {
+          "type": "number"
+        },
+        "targetPhotoCount": {
+          "type": "number"
+        },
+        "memo": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "color", "status", "startDate", "endDate", "createdBy", "createdAt", "updatedAt"]
+    },
+    "SharedPhoto": {
+      "title": "SharedPhoto",
+      "description": "Uploaded GPS photo metadata and address info shared across team members.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "fileSize": {
+          "type": "number"
+        },
+        "mimeType": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "uploadedAt": {
+          "type": "number"
+        },
+        "hasGps": {
+          "type": "boolean"
+        },
+        "isManualLocation": {
+          "type": "boolean"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "exif": {
+          "type": "object"
+        },
+        "locationFormatted": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "locationShort": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "sectionId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "routeOrder": {
+          "type": "number"
+        },
+        "workEntryId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "teamName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "isChecked": {
+          "type": "boolean"
+        },
+        "uploadedBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "uploadedByName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "fileName", "fileSize", "mimeType", "uploadedAt", "hasGps", "isChecked", "uploadedBy", "uploadedByName", "updatedAt"]
+    },
+    "SharedPhotoMedia": {
+      "title": "SharedPhotoMedia",
+      "description": "Compressed image preview payload (<750KB) for cross-device team viewing.",
+      "type": "object",
+      "properties": {
+        "photoId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "dataUrl": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 750000
+        },
+        "uploadedBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["photoId", "dataUrl", "uploadedBy", "createdAt"]
+    },
+    "SharedWorkEntry": {
+      "title": "SharedWorkEntry",
+      "description": "Map-pinned work log entry with attached photo references shared across team members.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "teamName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "workDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "status": {
+          "type": "string",
+          "enum": ["planned", "in_progress", "completed"]
+        },
+        "sectionId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "locationFormatted": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "locationShort": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "photoIds": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdByName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "description", "teamName", "workDate", "status", "lat", "lng", "photoIds", "createdBy", "createdByName", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/workspaces/{workspaceId}": {
+      "schema": {
+        "$ref": "#/entities/UserWorkspaceLink"
+      },
+      "description": "Private per-user saved workspace links."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": {
+        "$ref": "#/entities/Workspace"
+      },
+      "description": "Shared team workspace root metadata."
+    },
+    "/workspaces/{workspaceId}/members/{memberId}": {
+      "schema": {
+        "$ref": "#/entities/WorkspaceMember"
+      },
+      "description": "Authorized team members of a workspace."
+    },
+    "/workspaces/{workspaceId}/sections/{sectionId}": {
+      "schema": {
+        "$ref": "#/entities/SharedSection"
+      },
+      "description": "Work sections belonging to the shared workspace."
+    },
+    "/workspaces/{workspaceId}/photos/{photoId}": {
+      "schema": {
+        "$ref": "#/entities/SharedPhoto"
+      },
+      "description": "Uploaded photo metadata belonging to the shared workspace."
+    },
+    "/workspaces/{workspaceId}/photoMedia/{photoId}": {
+      "schema": {
+        "$ref": "#/entities/SharedPhotoMedia"
+      },
+      "description": "Compressed image preview data for shared workspace photos."
+    },
+    "/workspaces/{workspaceId}/workEntries/{entryId}": {
+      "schema": {
+        "$ref": "#/entities/SharedWorkEntry"
+      },
+      "description": "Map work entries belonging to the shared workspace."
+    }
+  }
+}
