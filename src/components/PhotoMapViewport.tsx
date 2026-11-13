@@ -1,17 +1,6 @@
+import L from 'leaflet';
 import {
-  AdvancedMarker,
-  InfoWindow,
-  Map as GoogleMap,
-  MapMouseEvent,
-  useAdvancedMarkerRef,
-  useMap,
-  useMapsLibrary,
-} from '@vis.gl/react-google-maps';
-import {
-  Check,
-  ClipboardCheck,
   Crosshair,
-  ExternalLink,
   ImagePlus,
   Layers,
   Maximize2,
@@ -20,7 +9,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {type MutableRefObject, useEffect, useMemo, useRef} from 'react';
 import type {
   MapLayerType,
   PhotoItem,
@@ -29,410 +18,15 @@ import type {
 } from '../types/photo';
 import {formatDecimalCoords} from '../utils/exif';
 import {formatDistance} from '../utils/geo';
-import {PhotoThumbnail} from './PhotoThumbnail';
 
-const DEFAULT_CENTER = {lat: 37.5665, lng: 126.978};
+const DEFAULT_CENTER: [number, number] = [37.5665, 126.978];
 const DEFAULT_ZOOM = 11;
-const Z_INDEX_SELECTED = 1000;
-const Z_INDEX_HOVER = 999;
-
-interface PhotoMarkerProps {
-  photo: PhotoItem & {lat: number; lng: number};
-  sectionColor: string;
-  isSelected: boolean;
-  isHovered: boolean;
-  zIndex: number;
-  orderIndex?: number;
-  showOrderBadge: boolean;
-  onSelect: (id: string, marker: google.maps.marker.AdvancedMarkerElement) => void;
-  onHoverChange: (id: string | null) => void;
-}
-
-function PhotoMarkerPin({
-  photo,
-  sectionColor,
-  isSelected,
-  isHovered,
-  zIndex,
-  orderIndex,
-  showOrderBadge,
-  onSelect,
-  onHoverChange,
-}: PhotoMarkerProps) {
-  const [markerRef, marker] = useAdvancedMarkerRef();
-
-  const handleClick = useCallback(() => {
-    if (marker) {
-      onSelect(photo.id, marker);
-    }
-  }, [marker, onSelect, photo.id]);
-
-  const active = isSelected || isHovered;
-
-  return (
-    <AdvancedMarker
-      ref={markerRef}
-      position={{lat: photo.lat, lng: photo.lng}}
-      zIndex={zIndex}
-      title={photo.location?.shortAddress || photo.fileName}
-      onClick={handleClick}
-    >
-      <div
-        onMouseEnter={() => onHoverChange(photo.id)}
-        onMouseLeave={() => onHoverChange(null)}
-        className={`relative flex flex-col items-center cursor-pointer transition-transform duration-150 ${
-          active ? 'scale-110' : 'hover:scale-105'
-        }`}
-      >
-        <div
-          className="relative w-12 h-12 rounded-lg overflow-hidden bg-white p-0.5 shadow-md transition-all"
-          style={{
-            boxShadow: isSelected
-              ? `0 0 0 3px ${sectionColor}, 0 10px 15px -3px rgb(0 0 0 / 0.2)`
-              : isHovered
-                ? `0 0 0 2px ${sectionColor}, 0 8px 12px -3px rgb(0 0 0 / 0.18)`
-                : `0 0 0 2px ${sectionColor}`,
-          }}
-        >
-          <PhotoThumbnail
-            src={photo.previewUrl}
-            fallbackSrc={photo.fallbackPreviewUrl}
-            alt={photo.fileName}
-            className="w-full h-full object-cover rounded-[5px]"
-          />
-          {showOrderBadge && orderIndex !== undefined && (
-            <span
-              className="absolute top-0.5 left-0.5 min-w-4 h-4 px-1 rounded text-white text-[10px] font-mono font-semibold flex items-center justify-center tabular-nums"
-              style={{backgroundColor: sectionColor}}
-            >
-              {orderIndex + 1}
-            </span>
-          )}
-          {photo.isChecked && (
-            <span className="absolute bottom-0.5 right-0.5 w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-xs">
-              <Check className="w-2.5 h-2.5" />
-            </span>
-          )}
-        </div>
-        <div
-          className="w-2.5 h-2.5 -mt-1.5 rotate-45"
-          style={{backgroundColor: sectionColor}}
-        />
-      </div>
-    </AdvancedMarker>
-  );
-}
-
-interface WorkEntryMarkerProps {
-  entry: WorkEntry;
-  sectionColor: string;
-  isSelected: boolean;
-  onSelect: (id: string, marker: google.maps.marker.AdvancedMarkerElement) => void;
-}
-
-function WorkEntryMarkerPin({
-  entry,
-  sectionColor,
-  isSelected,
-  onSelect,
-}: WorkEntryMarkerProps) {
-  const [markerRef, marker] = useAdvancedMarkerRef();
-
-  const handleClick = useCallback(() => {
-    if (marker) {
-      onSelect(entry.id, marker);
-    }
-  }, [marker, onSelect, entry.id]);
-
-  return (
-    <AdvancedMarker
-      ref={markerRef}
-      position={{lat: entry.lat, lng: entry.lng}}
-      zIndex={isSelected ? Z_INDEX_SELECTED + 10 : 850}
-      title={entry.title}
-      onClick={handleClick}
-    >
-      <div
-        className={`flex flex-col items-center cursor-pointer transition-transform duration-150 ${
-          isSelected ? 'scale-110' : 'hover:scale-105'
-        }`}
-      >
-        <div
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 text-white shadow-lg border-2 ${
-            isSelected ? 'ring-2 ring-blue-400' : ''
-          }`}
-          style={{borderColor: sectionColor}}
-        >
-          <ClipboardCheck
-            className="w-3.5 h-3.5 shrink-0"
-            style={{
-              color: entry.status === 'completed' ? '#34D399' : '#FBBF24',
-            }}
-          />
-          <span className="text-[11px] font-semibold max-w-[110px] truncate">
-            {entry.title}
-          </span>
-          {entry.photoIds.length > 0 && (
-            <span className="text-[10px] font-mono text-slate-300 tabular-nums">
-              {entry.photoIds.length}
-            </span>
-          )}
-        </div>
-        <div
-          className="w-2.5 h-2.5 -mt-1.5 rotate-45"
-          style={{backgroundColor: sectionColor}}
-        />
-      </div>
-    </AdvancedMarker>
-  );
-}
-
-interface CameraControllerProps {
-  points: Array<{lat: number; lng: number}>;
-  selectedTarget: {lat: number; lng: number} | null;
-  fitTrigger: number;
-  focusTrigger: number;
-}
-
-function MapCameraController({
-  points,
-  selectedTarget,
-  fitTrigger,
-  focusTrigger,
-}: CameraControllerProps) {
-  const map = useMap();
-  const prevFitTrigger = useRef(0);
-  const prevFocusTrigger = useRef(0);
-
-  const fitAll = useCallback(() => {
-    if (!map || points.length === 0) return;
-
-    if (points.length === 1) {
-      map.panTo(points[0]);
-      map.setZoom(15);
-      return;
-    }
-
-    const bounds = new google.maps.LatLngBounds();
-    for (const p of points) {
-      bounds.extend(p);
-    }
-    map.fitBounds(bounds, {top: 72, right: 72, bottom: 72, left: 72});
-  }, [map, points]);
-
-  useEffect(() => {
-    if (!map) return;
-    if (fitTrigger !== prevFitTrigger.current) {
-      prevFitTrigger.current = fitTrigger;
-      fitAll();
-    }
-  }, [map, fitTrigger, fitAll]);
-
-  useEffect(() => {
-    if (!map || !selectedTarget) return;
-    if (focusTrigger !== prevFocusTrigger.current) {
-      prevFocusTrigger.current = focusTrigger;
-      map.panTo(selectedTarget);
-      const currentZoom = map.getZoom() ?? 11;
-      if (currentZoom < 14) {
-        map.setZoom(15);
-      }
-    }
-  }, [map, selectedTarget, focusTrigger]);
-
-  return null;
-}
 
 interface SectionRouteGroup {
   sectionId: string;
   color: string;
   points: Array<{lat: number; lng: number}>;
   isActive: boolean;
-}
-
-interface SectionRoutesOverlayProps {
-  groups: SectionRouteGroup[];
-  visible: boolean;
-  onDistancesComputed: (distances: Record<string, number>) => void;
-}
-
-function SectionRoutesOverlay({
-  groups,
-  visible,
-  onDistancesComputed,
-}: SectionRoutesOverlayProps) {
-  const map = useMap();
-  const routesLib = useMapsLibrary('routes');
-  const routeCacheRef = useRef<
-    Record<string, {path: google.maps.LatLngLiteral[]; distanceMeters: number}>
-  >({});
-
-  useEffect(() => {
-    if (!map || !visible) return;
-
-    let cancelled = false;
-    const polylines: google.maps.Polyline[] = [];
-
-    const drawGroupPolyline = (
-      path: google.maps.LatLngLiteral[],
-      color: string,
-      isActive: boolean,
-      isRoadSnapped: boolean
-    ) => {
-      const polyline = new google.maps.Polyline({
-        path,
-        geodesic: true,
-        strokeColor: color,
-        strokeOpacity: isActive ? 0.95 : 0.78,
-        strokeWeight: isActive ? 6 : 4.5,
-        icons: [
-          {
-            icon: {
-              path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-              scale: 2.5,
-              strokeColor: '#FFFFFF',
-              fillColor: color,
-              fillOpacity: 1,
-            },
-            offset: '24px',
-            repeat: '110px',
-          },
-        ],
-        ...(isRoadSnapped
-          ? {}
-          : {
-              strokeOpacity: 0.65,
-            }),
-        map,
-      });
-      polylines.push(polyline);
-    };
-
-    const run = async () => {
-      const computedDistances: Record<string, number> = {};
-
-      for (const group of groups) {
-        if (group.points.length < 2) continue;
-
-        const sig = `${group.sectionId}:${group.points
-          .map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`)
-          .join('|')}`;
-
-        const cached = routeCacheRef.current[sig];
-        if (cached) {
-          if (!cancelled) {
-            drawGroupPolyline(cached.path, group.color, group.isActive, true);
-            computedDistances[group.sectionId] = cached.distanceMeters;
-          }
-          continue;
-        }
-
-        // Attempt road-following route using modern Routes API SDK wrapper
-        if (routesLib && group.points.length <= 25) {
-          try {
-            const origin = group.points[0];
-            const destination = group.points[group.points.length - 1];
-            const intermediates =
-              group.points.length > 2
-                ? group.points.slice(1, -1).map((pt) => ({location: pt}))
-                : undefined;
-
-            const request: Record<string, unknown> = {
-              origin,
-              destination,
-              travelMode: 'DRIVING',
-              fields: ['path', 'distanceMeters'],
-            };
-            if (intermediates && intermediates.length > 0) {
-              request.intermediates = intermediates;
-            }
-
-            const response = await (
-              routesLib.Route as unknown as {
-                computeRoutes: (req: Record<string, unknown>) => Promise<{
-                  routes?: Array<{
-                    path?: Array<google.maps.LatLng | google.maps.LatLngLiteral>;
-                    distanceMeters?: number;
-                    createPolylines?: () => google.maps.Polyline[];
-                  }>;
-                }>;
-              }
-            ).computeRoutes(request);
-
-            const primaryRoute = response?.routes?.[0];
-            if (primaryRoute && !cancelled) {
-              let decodedPath: google.maps.LatLngLiteral[] = [];
-              if (primaryRoute.path && primaryRoute.path.length > 0) {
-                decodedPath = primaryRoute.path.map((pt) =>
-                  typeof (pt as google.maps.LatLng).lat === 'function'
-                    ? {
-                        lat: (pt as google.maps.LatLng).lat(),
-                        lng: (pt as google.maps.LatLng).lng(),
-                      }
-                    : (pt as google.maps.LatLngLiteral)
-                );
-              } else if (primaryRoute.createPolylines) {
-                const tempLines = primaryRoute.createPolylines();
-                for (const line of tempLines) {
-                  const arr = line.getPath().getArray();
-                  for (const pt of arr) {
-                    decodedPath.push({lat: pt.lat(), lng: pt.lng()});
-                  }
-                  line.setMap(null);
-                }
-              }
-
-              if (decodedPath.length >= 2) {
-                const dist = primaryRoute.distanceMeters ?? 0;
-                routeCacheRef.current[sig] = {
-                  path: decodedPath,
-                  distanceMeters: dist,
-                };
-                drawGroupPolyline(
-                  decodedPath,
-                  group.color,
-                  group.isActive,
-                  true
-                );
-                if (dist > 0) {
-                  computedDistances[group.sectionId] = dist;
-                }
-                continue;
-              }
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (
-              msg.includes('RESOURCE_EXHAUSTED') ||
-              msg.includes('OVER_QUERY_LIMIT')
-            ) {
-              window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-            }
-            // Fall back cleanly to direct path polyline below
-          }
-        }
-
-        if (!cancelled) {
-          drawGroupPolyline(group.points, group.color, group.isActive, false);
-        }
-      }
-
-      if (!cancelled && Object.keys(computedDistances).length > 0) {
-        onDistancesComputed(computedDistances);
-      }
-    };
-
-    void run();
-
-    return () => {
-      cancelled = true;
-      for (const p of polylines) {
-        p.setMap(null);
-      }
-    };
-  }, [map, routesLib, groups, visible, onDistancesComputed]);
-
-  return null;
 }
 
 interface PhotoMapViewportProps {
@@ -449,7 +43,10 @@ interface PhotoMapViewportProps {
   showSectionPaths: boolean;
   fitTrigger: number;
   focusTrigger: number;
-  sectionProgressLookup: Record<string, {progressPercent: number; measuredDistanceMeters: number}>;
+  sectionProgressLookup: Record<
+    string,
+    {progressPercent: number; measuredDistanceMeters: number}
+  >;
   onSelectPhoto: (id: string | null) => void;
   onSelectEntry: (id: string | null) => void;
   onSelectSectionFilter: (sectionId: string | null) => void;
@@ -464,6 +61,7 @@ interface PhotoMapViewportProps {
   onStartWorkEntryPick: () => void;
   onTriggerUpload: () => void;
   onRoadDistancesComputed: (distances: Record<string, number>) => void;
+  mapCaptureRef?: MutableRefObject<(() => Promise<string | null>) | null>;
 }
 
 const LAYER_OPTIONS: Array<{id: MapLayerType; label: string}> = [
@@ -472,6 +70,372 @@ const LAYER_OPTIONS: Array<{id: MapLayerType; label: string}> = [
   {id: 'hybrid', label: '하이브리드'},
   {id: 'terrain', label: '지형'},
 ];
+
+function createTileLayers(layer: MapLayerType): L.TileLayer[] {
+  switch (layer) {
+    case 'satellite':
+      return [
+        L.tileLayer(
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          {
+            maxZoom: 19,
+            attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+          }
+        ),
+      ];
+    case 'hybrid':
+      return [
+        L.tileLayer(
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          {
+            maxZoom: 19,
+            attribution: '&copy; Esri',
+          }
+        ),
+        L.tileLayer(
+          'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',
+          {
+            subdomains: 'abcd',
+            maxZoom: 19,
+            attribution: '&copy; CARTO',
+          }
+        ),
+      ];
+    case 'terrain':
+      return [
+        L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+          maxZoom: 17,
+          attribution: '&copy; OpenStreetMap, SRTM &copy; OpenTopoMap',
+        }),
+      ];
+    case 'roadmap':
+    default:
+      return [
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors',
+        }),
+      ];
+  }
+}
+
+function createCheckSvg(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '10');
+  svg.setAttribute('height', '10');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '3');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  const poly = document.createElementNS(
+    'http://www.w3.org/2000/svg',
+    'polyline'
+  );
+  poly.setAttribute('points', '20 6 9 17 4 12');
+  svg.appendChild(poly);
+  return svg;
+}
+
+function createClipboardCheckSvg(color: string): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', color);
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.style.flexShrink = '0';
+
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('width', '8');
+  rect.setAttribute('height', '4');
+  rect.setAttribute('x', '8');
+  rect.setAttribute('y', '2');
+  rect.setAttribute('rx', '1');
+  rect.setAttribute('ry', '1');
+  svg.appendChild(rect);
+
+  const path1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path1.setAttribute(
+    'd',
+    'M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2'
+  );
+  svg.appendChild(path1);
+
+  const path2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path2.setAttribute('d', 'm9 14 2 2 4-4');
+  svg.appendChild(path2);
+
+  return svg;
+}
+
+function createPhotoFallbackElement(): HTMLElement {
+  const box = document.createElement('div');
+  box.className =
+    'w-full h-full rounded-[5px] bg-slate-100 text-slate-400 flex items-center justify-center';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '18');
+  svg.setAttribute('height', '18');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('width', '18');
+  rect.setAttribute('height', '18');
+  rect.setAttribute('x', '3');
+  rect.setAttribute('y', '3');
+  rect.setAttribute('rx', '2');
+  svg.appendChild(rect);
+  const circle = document.createElementNS(
+    'http://www.w3.org/2000/svg',
+    'circle'
+  );
+  circle.setAttribute('cx', '9');
+  circle.setAttribute('cy', '9');
+  circle.setAttribute('r', '2');
+  svg.appendChild(circle);
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'm21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21');
+  svg.appendChild(path);
+  box.appendChild(svg);
+  return box;
+}
+
+function buildPhotoMarkerIcon(
+  photo: PhotoItem & {lat: number; lng: number},
+  sectionColor: string,
+  isSelected: boolean,
+  isHovered: boolean,
+  orderIndex: number | undefined,
+  showOrderBadge: boolean,
+  onHover: (id: string | null) => void
+): L.DivIcon {
+  const wrapper = document.createElement('div');
+  const active = isSelected || isHovered;
+  wrapper.className = `relative flex flex-col items-center cursor-pointer transition-transform duration-150 ${
+    active ? 'scale-110' : 'hover:scale-105'
+  }`;
+  wrapper.addEventListener('mouseenter', () => onHover(photo.id));
+  wrapper.addEventListener('mouseleave', () => onHover(null));
+
+  const card = document.createElement('div');
+  card.className =
+    'relative w-12 h-12 rounded-lg overflow-hidden bg-white p-0.5 shadow-md transition-all';
+  card.style.boxShadow = isSelected
+    ? `0 0 0 3px ${sectionColor}, 0 10px 15px -3px rgb(0 0 0 / 0.25)`
+    : isHovered
+      ? `0 0 0 2px ${sectionColor}, 0 8px 12px -3px rgb(0 0 0 / 0.2)`
+      : `0 0 0 2px ${sectionColor}`;
+
+  const img = document.createElement('img');
+  img.src = photo.previewUrl;
+  img.alt = photo.fileName;
+  img.referrerPolicy = 'no-referrer';
+  img.className = 'w-full h-full object-cover rounded-[5px] block';
+  let triedFallback = false;
+  img.onerror = () => {
+    if (!triedFallback && photo.fallbackPreviewUrl) {
+      triedFallback = true;
+      img.src = photo.fallbackPreviewUrl;
+      return;
+    }
+    img.replaceWith(createPhotoFallbackElement());
+  };
+  card.appendChild(img);
+
+  if (showOrderBadge && orderIndex !== undefined) {
+    const badge = document.createElement('span');
+    badge.className =
+      'absolute top-0.5 left-0.5 min-w-4 h-4 px-1 rounded text-white text-[10px] font-mono font-semibold flex items-center justify-center tabular-nums';
+    badge.style.backgroundColor = sectionColor;
+    badge.textContent = String(orderIndex + 1);
+    card.appendChild(badge);
+  }
+
+  if (photo.isChecked) {
+    const checked = document.createElement('span');
+    checked.className =
+      'absolute bottom-0.5 right-0.5 w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-xs';
+    checked.appendChild(createCheckSvg());
+    card.appendChild(checked);
+  }
+
+  wrapper.appendChild(card);
+
+  const tip = document.createElement('div');
+  tip.className = 'w-2.5 h-2.5 -mt-1.5 rotate-45';
+  tip.style.backgroundColor = sectionColor;
+  wrapper.appendChild(tip);
+
+  return L.divIcon({
+    html: wrapper,
+    className: 'photoatlas-marker-icon',
+    iconSize: [48, 54],
+    iconAnchor: [24, 53],
+    popupAnchor: [0, -52],
+  });
+}
+
+function buildPhotoPopupNode(
+  photo: PhotoItem & {lat: number; lng: number}
+): HTMLElement {
+  const root = document.createElement('div');
+  root.className = 'w-[228px] text-slate-900 font-sans';
+
+  const mediaBox = document.createElement('div');
+  mediaBox.className =
+    'w-full h-28 rounded-md overflow-hidden bg-slate-100 mb-2';
+  const img = document.createElement('img');
+  img.src = photo.previewUrl;
+  img.alt = photo.fileName;
+  img.referrerPolicy = 'no-referrer';
+  img.className = 'w-full h-full object-cover block';
+  let triedFallback = false;
+  img.onerror = () => {
+    if (!triedFallback && photo.fallbackPreviewUrl) {
+      triedFallback = true;
+      img.src = photo.fallbackPreviewUrl;
+      return;
+    }
+    img.replaceWith(createPhotoFallbackElement());
+  };
+  mediaBox.appendChild(img);
+  root.appendChild(mediaBox);
+
+  const title = document.createElement('p');
+  title.className = 'text-xs font-semibold text-slate-900 truncate m-0';
+  title.textContent = photo.location?.shortAddress || photo.fileName;
+  root.appendChild(title);
+
+  if (photo.location?.formattedAddress) {
+    const addr = document.createElement('p');
+    addr.className = 'text-[11px] text-slate-600 mt-0.5 leading-snug mb-0';
+    addr.textContent = photo.location.formattedAddress;
+    root.appendChild(addr);
+  }
+
+  const footer = document.createElement('div');
+  footer.className =
+    'flex items-center justify-between gap-2 mt-2 pt-1.5 border-t border-slate-100 text-[11px] text-slate-500';
+
+  const coords = document.createElement('span');
+  coords.className = 'font-mono tabular-nums';
+  coords.textContent = formatDecimalCoords(photo.lat, photo.lng);
+  footer.appendChild(coords);
+
+  const link = document.createElement('a');
+  link.href = `https://www.openstreetmap.org/?mlat=${photo.lat}&mlon=${photo.lng}#map=17/${photo.lat}/${photo.lng}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.className =
+    'inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap shrink-0';
+  link.textContent = 'OSM';
+  footer.appendChild(link);
+
+  root.appendChild(footer);
+  return root;
+}
+
+function buildWorkEntryMarkerIcon(
+  entry: WorkEntry,
+  sectionColor: string,
+  isSelected: boolean
+): L.DivIcon {
+  const wrapper = document.createElement('div');
+  wrapper.className = `flex flex-col items-center cursor-pointer transition-transform duration-150 ${
+    isSelected ? 'scale-110' : 'hover:scale-105'
+  }`;
+
+  const pill = document.createElement('div');
+  pill.className = `flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 text-white shadow-lg border-2 ${
+    isSelected ? 'ring-2 ring-blue-400' : ''
+  }`;
+  pill.style.borderColor = sectionColor;
+
+  pill.appendChild(
+    createClipboardCheckSvg(
+      entry.status === 'completed' ? '#34D399' : '#FBBF24'
+    )
+  );
+
+  const title = document.createElement('span');
+  title.className = 'text-[11px] font-semibold max-w-[110px] truncate';
+  title.textContent = entry.title;
+  pill.appendChild(title);
+
+  if (entry.photoIds.length > 0) {
+    const count = document.createElement('span');
+    count.className = 'text-[10px] font-mono text-slate-300 tabular-nums';
+    count.textContent = String(entry.photoIds.length);
+    pill.appendChild(count);
+  }
+
+  wrapper.appendChild(pill);
+
+  const tip = document.createElement('div');
+  tip.className = 'w-2.5 h-2.5 -mt-1.5 rotate-45';
+  tip.style.backgroundColor = sectionColor;
+  wrapper.appendChild(tip);
+
+  return L.divIcon({
+    html: wrapper,
+    className: 'photoatlas-entry-icon',
+    iconSize: [148, 36],
+    iconAnchor: [74, 35],
+  });
+}
+
+function computeBearingDeg(
+  from: {lat: number; lng: number},
+  to: {lat: number; lng: number}
+): number {
+  const dLat = to.lat - from.lat;
+  const dLng = (to.lng - from.lng) * Math.cos((from.lat * Math.PI) / 180);
+  return (Math.atan2(dLng, dLat) * 180) / Math.PI;
+}
+
+function createDirectionArrowMarker(
+  lat: number,
+  lng: number,
+  bearingDeg: number,
+  color: string
+): L.Marker {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex items-center justify-center pointer-events-none';
+  wrap.style.transform = `rotate(${bearingDeg}deg)`;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  const poly = document.createElementNS(
+    'http://www.w3.org/2000/svg',
+    'polygon'
+  );
+  poly.setAttribute('points', '8,1 14,13 8,10 2,13');
+  poly.setAttribute('fill', color);
+  poly.setAttribute('stroke', '#FFFFFF');
+  poly.setAttribute('stroke-width', '1.5');
+  poly.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(poly);
+  wrap.appendChild(svg);
+
+  return L.marker([lat, lng], {
+    interactive: false,
+    keyboard: false,
+    icon: L.divIcon({
+      html: wrap,
+      className: 'photoatlas-arrow-icon',
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+    }),
+  });
+}
 
 export function PhotoMapViewport({
   photos,
@@ -502,12 +466,35 @@ export function PhotoMapViewport({
   onStartWorkEntryPick,
   onTriggerUpload,
   onRoadDistancesComputed,
+  mapCaptureRef,
 }: PhotoMapViewportProps) {
-  const [anchorMarker, setAnchorMarker] =
-    useState<google.maps.marker.AdvancedMarkerElement | null>(null);
-  const [infoOpenForPhotoId, setInfoOpenForPhotoId] = useState<string | null>(
-    null
-  );
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const tileLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const routeLayerRef = useRef<L.LayerGroup | null>(null);
+  const photoLayerRef = useRef<L.LayerGroup | null>(null);
+  const entryLayerRef = useRef<L.LayerGroup | null>(null);
+  const photoMarkerByIdRef = useRef<Record<string, L.Marker>>({});
+  const routeCacheRef = useRef<
+    Record<string, {path: Array<{lat: number; lng: number}>; distanceMeters: number}>
+  >({});
+
+  const prevFitTriggerRef = useRef(0);
+  const prevFocusTriggerRef = useRef(0);
+
+  // Refs for latest callbacks & pick state inside Leaflet click handler
+  const pickStateRef = useRef({
+    manualPinPhoto,
+    isPickingWorkLocation,
+    onManualPinAssign,
+    onPickWorkLocation,
+  });
+  pickStateRef.current = {
+    manualPinPhoto,
+    isPickingWorkLocation,
+    onManualPinAssign,
+    onPickWorkLocation,
+  };
 
   const sectionColorLookup = useMemo(() => {
     const lookup: Record<string, string> = {};
@@ -592,65 +579,707 @@ export function PhotoMapViewport({
     return null;
   }, [selectedPhotoId, selectedEntryId, gpsPhotos, workEntries]);
 
-  const infoPhoto = useMemo(
-    () => gpsPhotos.find((p) => p.id === infoOpenForPhotoId) || null,
-    [gpsPhotos, infoOpenForPhotoId]
-  );
-
+  // Initialize Leaflet map once
   useEffect(() => {
-    if (!selectedPhotoId) {
-      setInfoOpenForPhotoId(null);
-      setAnchorMarker(null);
+    const el = mapContainerRef.current;
+    if (!el || mapRef.current) return;
+
+    const map = L.map(el, {
+      center: DEFAULT_CENTER,
+      zoom: DEFAULT_ZOOM,
+      zoomControl: false,
+      attributionControl: true,
+    });
+
+    L.control.zoom({position: 'bottomright'}).addTo(map);
+
+    const tileGroup = L.layerGroup().addTo(map);
+    const routeGroup = L.layerGroup().addTo(map);
+    const photoGroup = L.layerGroup().addTo(map);
+    const entryGroup = L.layerGroup().addTo(map);
+
+    map.on('click', (e: L.LeafletMouseEvent) => {
+      const {
+        manualPinPhoto: pinPhoto,
+        isPickingWorkLocation: pickingWork,
+        onManualPinAssign: assignPin,
+        onPickWorkLocation: pickWork,
+      } = pickStateRef.current;
+
+      if (pinPhoto) {
+        assignPin(pinPhoto.id, e.latlng.lat, e.latlng.lng);
+        return;
+      }
+      if (pickingWork) {
+        pickWork(e.latlng.lat, e.latlng.lng);
+      }
+    });
+
+    mapRef.current = map;
+    tileLayerGroupRef.current = tileGroup;
+    routeLayerRef.current = routeGroup;
+    photoLayerRef.current = photoGroup;
+    entryLayerRef.current = entryGroup;
+
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize({pan: false});
+    });
+    resizeObserver.observe(el);
+
+    return () => {
+      resizeObserver.disconnect();
+      map.remove();
+      mapRef.current = null;
+      tileLayerGroupRef.current = null;
+      routeLayerRef.current = null;
+      photoLayerRef.current = null;
+      entryLayerRef.current = null;
+    };
+  }, []);
+
+  // Switch free base tile layers
+  useEffect(() => {
+    const tileGroup = tileLayerGroupRef.current;
+    if (!tileGroup) return;
+    tileGroup.clearLayers();
+    for (const layer of createTileLayers(mapLayer)) {
+      tileGroup.addLayer(layer);
     }
-  }, [selectedPhotoId]);
+  }, [mapLayer]);
 
-  const handlePhotoMarkerSelect = useCallback(
-    (id: string, marker: google.maps.marker.AdvancedMarkerElement) => {
-      onSelectEntry(null);
-      onSelectPhoto(id);
-      setAnchorMarker(marker);
-      setInfoOpenForPhotoId(id);
-    },
-    [onSelectPhoto, onSelectEntry]
-  );
+  // Update crosshair cursor during picking modes
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el) return;
+    const isPicking = Boolean(manualPinPhoto) || isPickingWorkLocation;
+    el.style.cursor = isPicking ? 'crosshair' : '';
+  }, [manualPinPhoto, isPickingWorkLocation]);
 
-  const handleEntryMarkerSelect = useCallback(
-    (id: string) => {
-      onSelectPhoto(null);
-      setInfoOpenForPhotoId(null);
-      onSelectEntry(id);
-    },
-    [onSelectPhoto, onSelectEntry]
-  );
+  // Render section routes (cached OSRM road-snapping + directional markers)
+  useEffect(() => {
+    const routeGroup = routeLayerRef.current;
+    if (!routeGroup) return;
 
-  const handleMapClick = useCallback(
-    (event: MapMouseEvent) => {
-      if (event.detail.latLng) {
-        if (manualPinPhoto) {
-          onManualPinAssign(
-            manualPinPhoto.id,
-            event.detail.latLng.lat,
-            event.detail.latLng.lng
-          );
-          return;
+    routeGroup.clearLayers();
+    if (!showSectionPaths || routeGroups.length === 0) return;
+
+    let cancelled = false;
+
+    const drawPath = (
+      layerBucket: L.LayerGroup,
+      path: Array<{lat: number; lng: number}>,
+      color: string,
+      isActive: boolean,
+      isRoadSnapped: boolean
+    ) => {
+      if (path.length < 2) return;
+      const latLngs: L.LatLngTuple[] = path.map((p) => [p.lat, p.lng]);
+
+      const line = L.polyline(latLngs, {
+        color,
+        weight: isActive ? 6 : 4.5,
+        opacity: isRoadSnapped ? (isActive ? 0.94 : 0.78) : 0.6,
+        dashArray: isRoadSnapped ? undefined : '6 6',
+        lineCap: 'round',
+        lineJoin: 'round',
+      });
+      layerBucket.addLayer(line);
+
+      // Draw directional arrows along the path
+      const arrowStep = Math.max(1, Math.floor(path.length / 4));
+      for (let i = 0; i < path.length - 1; i += arrowStep) {
+        const a = path[i];
+        const b = path[i + 1];
+        const midLat = (a.lat + b.lat) / 2;
+        const midLng = (a.lng + b.lng) / 2;
+        const bearing = computeBearingDeg(a, b);
+        layerBucket.addLayer(
+          createDirectionArrowMarker(midLat, midLng, bearing, color)
+        );
+      }
+    };
+
+    const run = async () => {
+      const computedDistances: Record<string, number> = {};
+
+      for (const group of routeGroups) {
+        if (cancelled) return;
+        if (group.points.length < 2) continue;
+
+        const sig = `${group.sectionId}:${group.points
+          .map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`)
+          .join('|')}`;
+
+        const groupBucket = L.layerGroup();
+        routeGroup.addLayer(groupBucket);
+
+        const cached = routeCacheRef.current[sig];
+        if (cached) {
+          drawPath(groupBucket, cached.path, group.color, group.isActive, true);
+          if (cached.distanceMeters > 0) {
+            computedDistances[group.sectionId] = cached.distanceMeters;
+          }
+          continue;
         }
-        if (isPickingWorkLocation) {
-          onPickWorkLocation(
-            event.detail.latLng.lat,
-            event.detail.latLng.lng
-          );
-          return;
+
+        // Draw immediate fallback polyline while OSRM responds
+        drawPath(groupBucket, group.points, group.color, group.isActive, false);
+
+        try {
+          const response = await fetch('/api/route', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({points: group.points}),
+          });
+          if (!response.ok || cancelled) continue;
+
+          const data = (await response.json()) as {
+            path?: Array<{lat: number; lng: number}>;
+            distanceMeters?: number;
+            fallback?: boolean;
+          };
+
+          if (
+            !cancelled &&
+            Array.isArray(data.path) &&
+            data.path.length >= 2 &&
+            !data.fallback
+          ) {
+            const dist = data.distanceMeters || 0;
+            routeCacheRef.current[sig] = {
+              path: data.path,
+              distanceMeters: dist,
+            };
+            groupBucket.clearLayers();
+            drawPath(groupBucket, data.path, group.color, group.isActive, true);
+            if (dist > 0) {
+              computedDistances[group.sectionId] = dist;
+            }
+          }
+        } catch {
+          // Keep direct polyline fallback cleanly
         }
       }
-      setInfoOpenForPhotoId(null);
-    },
-    [
-      manualPinPhoto,
-      isPickingWorkLocation,
-      onManualPinAssign,
-      onPickWorkLocation,
-    ]
-  );
+
+      if (!cancelled && Object.keys(computedDistances).length > 0) {
+        onRoadDistancesComputed(computedDistances);
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+      routeGroup.clearLayers();
+    };
+  }, [routeGroups, showSectionPaths, onRoadDistancesComputed]);
+
+  // Render Photo Markers
+  useEffect(() => {
+    const photoGroup = photoLayerRef.current;
+    if (!photoGroup) return;
+
+    photoGroup.clearLayers();
+    const nextById: Record<string, L.Marker> = {};
+
+    gpsPhotos.forEach((photo, index) => {
+      const color = photo.sectionId
+        ? sectionColorLookup[photo.sectionId] || '#2563EB'
+        : '#2563EB';
+      const isSelected = selectedPhotoId === photo.id;
+      const isHovered = hoveredPhotoId === photo.id;
+
+      const marker = L.marker([photo.lat, photo.lng], {
+        icon: buildPhotoMarkerIcon(
+          photo,
+          color,
+          isSelected,
+          isHovered,
+          timelineOrderLookup[photo.id],
+          showSectionPaths,
+          onHoverPhoto
+        ),
+        zIndexOffset: isSelected ? 1000 : isHovered ? 800 : index,
+        title: photo.location?.shortAddress || photo.fileName,
+      });
+
+      marker.bindPopup(buildPhotoPopupNode(photo), {
+        maxWidth: 260,
+        closeButton: true,
+        autoPanPadding: [24, 24],
+      });
+
+      marker.on('click', () => {
+        onSelectEntry(null);
+        onSelectPhoto(photo.id);
+      });
+
+      photoGroup.addLayer(marker);
+      nextById[photo.id] = marker;
+    });
+
+    photoMarkerByIdRef.current = nextById;
+  }, [
+    gpsPhotos,
+    sectionColorLookup,
+    selectedPhotoId,
+    hoveredPhotoId,
+    timelineOrderLookup,
+    showSectionPaths,
+    onHoverPhoto,
+    onSelectEntry,
+    onSelectPhoto,
+  ]);
+
+  // Render Work Entry Markers
+  useEffect(() => {
+    const entryGroup = entryLayerRef.current;
+    if (!entryGroup) return;
+
+    entryGroup.clearLayers();
+
+    for (const entry of workEntries) {
+      const color = entry.sectionId
+        ? sectionColorLookup[entry.sectionId] || '#0F172A'
+        : '#0F172A';
+      const isSelected = selectedEntryId === entry.id;
+
+      const marker = L.marker([entry.lat, entry.lng], {
+        icon: buildWorkEntryMarkerIcon(entry, color, isSelected),
+        zIndexOffset: isSelected ? 1020 : 850,
+        title: entry.title,
+      });
+
+      marker.on('click', () => {
+        onSelectPhoto(null);
+        onSelectEntry(entry.id);
+      });
+
+      entryGroup.addLayer(marker);
+    }
+  }, [
+    workEntries,
+    sectionColorLookup,
+    selectedEntryId,
+    onSelectPhoto,
+    onSelectEntry,
+  ]);
+
+  // Fit all points when fitTrigger changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (fitTrigger === prevFitTriggerRef.current) return;
+    prevFitTriggerRef.current = fitTrigger;
+
+    if (allPoints.length === 0) return;
+    if (allPoints.length === 1) {
+      map.setView([allPoints[0].lat, allPoints[0].lng], 15);
+      return;
+    }
+
+    const bounds = L.latLngBounds(allPoints.map((p) => [p.lat, p.lng]));
+    map.fitBounds(bounds, {padding: [72, 72], maxZoom: 16});
+  }, [fitTrigger, allPoints]);
+
+  // Focus selected target when focusTrigger changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !selectedTarget) return;
+    if (focusTrigger === prevFocusTriggerRef.current) return;
+    prevFocusTriggerRef.current = focusTrigger;
+
+    const targetZoom = Math.max(map.getZoom(), 15);
+    const reducedMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)'
+    ).matches;
+
+    if (reducedMotion) {
+      map.setView([selectedTarget.lat, selectedTarget.lng], targetZoom);
+    } else {
+      map.flyTo([selectedTarget.lat, selectedTarget.lng], targetZoom, {
+        duration: 0.45,
+      });
+    }
+  }, [focusTrigger, selectedTarget]);
+
+  // Register high-DPI map canvas capture for PDF report export
+  useEffect(() => {
+    if (!mapCaptureRef) return;
+
+    const loadCorsImg = (src: string, timeoutMs = 4000) =>
+      new Promise<HTMLImageElement | null>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        const timer = window.setTimeout(() => resolve(null), timeoutMs);
+        img.onload = () => {
+          window.clearTimeout(timer);
+          resolve(img);
+        };
+        img.onerror = () => {
+          window.clearTimeout(timer);
+          resolve(null);
+        };
+        img.src = src;
+      });
+
+    const getTileUrls = (
+      layer: MapLayerType,
+      z: number,
+      tx: number,
+      ty: number
+    ): string[] => {
+      const osmSub = ['a', 'b', 'c'][Math.abs(tx + ty) % 3];
+      const cartoSub = ['a', 'b', 'c', 'd'][Math.abs(tx + ty) % 4];
+      switch (layer) {
+        case 'satellite':
+          return [
+            `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${ty}/${tx}`,
+          ];
+        case 'hybrid':
+          return [
+            `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${ty}/${tx}`,
+            `https://${cartoSub}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/${z}/${tx}/${ty}.png`,
+          ];
+        case 'terrain':
+          return [`https://${osmSub}.tile.opentopomap.org/${z}/${tx}/${ty}.png`];
+        case 'roadmap':
+        default:
+          return [`https://${osmSub}.tile.openstreetmap.org/${z}/${tx}/${ty}.png`];
+      }
+    };
+
+    const drawRoundRect = (
+      ctx: CanvasRenderingContext2D,
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      r: number
+    ) => {
+      const rad = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + rad, y);
+      ctx.lineTo(x + w - rad, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+      ctx.lineTo(x + w, y + h - rad);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+      ctx.lineTo(x + rad, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+      ctx.lineTo(x, y + rad);
+      ctx.quadraticCurveTo(x, y, x + rad, y);
+      ctx.closePath();
+    };
+
+    mapCaptureRef.current = async () => {
+      const map = mapRef.current;
+      if (!map) return null;
+
+      const size = map.getSize();
+      if (size.x <= 0 || size.y <= 0) return null;
+
+      const dpr = Math.min(2, Math.max(1.5, 1400 / size.x));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(size.x * dpr);
+      canvas.height = Math.round(size.y * dpr);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+
+      ctx.scale(dpr, dpr);
+      ctx.fillStyle = '#E2E8F0';
+      ctx.fillRect(0, 0, size.x, size.y);
+
+      const maxTileZoom = mapLayer === 'terrain' ? 17 : 19;
+      const tileZoom = Math.min(Math.max(Math.round(map.getZoom()), 1), maxTileZoom);
+      const nwLatLng = map.containerPointToLatLng([0, 0]);
+      const seLatLng = map.containerPointToLatLng([size.x, size.y]);
+      const nwWorld = map.project(nwLatLng, tileZoom);
+      const seWorld = map.project(seLatLng, tileZoom);
+
+      const worldSpanX = seWorld.x - nwWorld.x;
+      const scale = worldSpanX > 0 ? size.x / worldSpanX : 1;
+
+      const maxIndex = Math.pow(2, tileZoom);
+      const minTx = Math.floor(nwWorld.x / 256);
+      const maxTx = Math.floor(seWorld.x / 256);
+      const minTy = Math.max(0, Math.floor(nwWorld.y / 256));
+      const maxTy = Math.min(maxIndex - 1, Math.floor(seWorld.y / 256));
+
+      const tileJobs: Array<{
+        dx: number;
+        dy: number;
+        dw: number;
+        dh: number;
+        urls: string[];
+      }> = [];
+
+      for (let tx = minTx; tx <= maxTx; tx++) {
+        const wrappedTx = ((tx % maxIndex) + maxIndex) % maxIndex;
+        for (let ty = minTy; ty <= maxTy; ty++) {
+          tileJobs.push({
+            dx: (tx * 256 - nwWorld.x) * scale,
+            dy: (ty * 256 - nwWorld.y) * scale,
+            dw: 256 * scale,
+            dh: 256 * scale,
+            urls: getTileUrls(mapLayer, tileZoom, wrappedTx, ty),
+          });
+        }
+      }
+
+      const loadedTiles = await Promise.all(
+        tileJobs.map(async (job) => {
+          const imgs = await Promise.all(job.urls.map((u) => loadCorsImg(u)));
+          return {job, imgs};
+        })
+      );
+
+      for (const {job, imgs} of loadedTiles) {
+        for (const img of imgs) {
+          if (img) {
+            ctx.drawImage(img, job.dx, job.dy, job.dw + 0.6, job.dh + 0.6);
+          }
+        }
+      }
+
+      // Draw Section Routes
+      if (showSectionPaths) {
+        for (const group of routeGroups) {
+          if (group.points.length < 2) continue;
+          const sig = `${group.sectionId}:${group.points
+            .map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`)
+            .join('|')}`;
+          const cached = routeCacheRef.current[sig];
+          const path = cached?.path?.length ? cached.path : group.points;
+          const pts = path.map((p) => map.latLngToContainerPoint([p.lat, p.lng]));
+
+          ctx.save();
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          if (!cached) {
+            ctx.setLineDash([6, 6]);
+          }
+
+          // White halo
+          ctx.beginPath();
+          pts.forEach((pt, idx) => {
+            if (idx === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+          });
+          ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+          ctx.lineWidth = (group.isActive ? 6 : 4.5) + 3;
+          ctx.stroke();
+
+          // Colored route
+          ctx.strokeStyle = group.color;
+          ctx.lineWidth = group.isActive ? 6 : 4.5;
+          ctx.stroke();
+          ctx.restore();
+
+          // Directional arrows
+          const step = Math.max(1, Math.floor(path.length / 4));
+          for (let i = 0; i < path.length - 1; i += step) {
+            const p1 = pts[i];
+            const p2 = pts[i + 1];
+            const mx = (p1.x + p2.x) / 2;
+            const my = (p1.y + p2.y) / 2;
+            const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) + Math.PI / 2;
+            ctx.save();
+            ctx.translate(mx, my);
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(0, -6);
+            ctx.lineTo(5, 5);
+            ctx.lineTo(0, 2);
+            ctx.lineTo(-5, 5);
+            ctx.closePath();
+            ctx.fillStyle = group.color;
+            ctx.fill();
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 1.3;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+
+      // Draw Photo Pins
+      const photoEntries = await Promise.all(
+        gpsPhotos.map(async (photo) => {
+          const pt = map.latLngToContainerPoint([photo.lat, photo.lng]);
+          if (
+            pt.x < -40 ||
+            pt.x > size.x + 40 ||
+            pt.y < -40 ||
+            pt.y > size.y + 40
+          ) {
+            return null;
+          }
+          const img =
+            (await loadCorsImg(photo.previewUrl, 1500)) ||
+            (photo.fallbackPreviewUrl
+              ? await loadCorsImg(photo.fallbackPreviewUrl, 1500)
+              : null);
+          return {photo, pt, img};
+        })
+      );
+
+      for (const item of photoEntries) {
+        if (!item) continue;
+        const {photo, pt, img} = item;
+        const color = photo.sectionId
+          ? sectionColorLookup[photo.sectionId] || '#2563EB'
+          : '#2563EB';
+        const pinSize = 42;
+        const left = pt.x - pinSize / 2;
+        const top = pt.y - pinSize - 6;
+
+        // Pointer triangle
+        ctx.beginPath();
+        ctx.moveTo(pt.x - 5, top + pinSize - 1);
+        ctx.lineTo(pt.x + 5, top + pinSize - 1);
+        ctx.lineTo(pt.x, pt.y);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+
+        // White frame
+        drawRoundRect(ctx, left, top, pinSize, pinSize, 7);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        // Photo thumb crop
+        if (img) {
+          ctx.save();
+          drawRoundRect(ctx, left + 2.5, top + 2.5, pinSize - 5, pinSize - 5, 5);
+          ctx.clip();
+          const iw = img.naturalWidth || img.width;
+          const ih = img.naturalHeight || img.height;
+          const s = Math.max((pinSize - 5) / iw, (pinSize - 5) / ih);
+          const sw = (pinSize - 5) / s;
+          const sh = (pinSize - 5) / s;
+          ctx.drawImage(
+            img,
+            (iw - sw) / 2,
+            (ih - sh) / 2,
+            sw,
+            sh,
+            left + 2.5,
+            top + 2.5,
+            pinSize - 5,
+            pinSize - 5
+          );
+          ctx.restore();
+        }
+
+        // Order badge
+        const orderIdx = timelineOrderLookup[photo.id];
+        if (showSectionPaths && orderIdx !== undefined) {
+          drawRoundRect(ctx, left + 3, top + 3, 15, 14, 3);
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.font = 'bold 9px monospace';
+          ctx.fillStyle = '#FFFFFF';
+          ctx.textAlign = 'center';
+          ctx.fillText(String(orderIdx + 1), left + 10.5, top + 13);
+          ctx.textAlign = 'left';
+        }
+
+        // Checked badge
+        if (photo.isChecked) {
+          ctx.beginPath();
+          ctx.arc(left + pinSize - 7, top + pinSize - 7, 6.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#059669';
+          ctx.fill();
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+        }
+      }
+
+      // Draw Work Entry Pins
+      ctx.font = '600 11px sans-serif';
+      for (const entry of workEntries) {
+        const pt = map.latLngToContainerPoint([entry.lat, entry.lng]);
+        if (
+          pt.x < -80 ||
+          pt.x > size.x + 80 ||
+          pt.y < -40 ||
+          pt.y > size.y + 40
+        ) {
+          continue;
+        }
+        const color = entry.sectionId
+          ? sectionColorLookup[entry.sectionId] || '#0F172A'
+          : '#0F172A';
+        const label =
+          entry.title.length > 14 ? `${entry.title.slice(0, 14)}...` : entry.title;
+        const textW = ctx.measureText(label).width;
+        const pillW = Math.max(70, textW + 30);
+        const pillH = 26;
+        const left = pt.x - pillW / 2;
+        const top = pt.y - pillH - 6;
+
+        ctx.beginPath();
+        ctx.moveTo(pt.x - 5, top + pillH - 1);
+        ctx.lineTo(pt.x + 5, top + pillH - 1);
+        ctx.lineTo(pt.x, pt.y);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+
+        drawRoundRect(ctx, left, top, pillW, pillH, 6);
+        ctx.fillStyle = '#0F172A';
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(left + 12, top + pillH / 2, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = entry.status === 'completed' ? '#34D399' : '#FBBF24';
+        ctx.fill();
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(label, left + 20, top + 17);
+      }
+
+      // Attribution tag
+      const attrText =
+        mapLayer === 'satellite' || mapLayer === 'hybrid'
+          ? '© Esri · PhotoAtlas'
+          : mapLayer === 'terrain'
+            ? '© OpenTopoMap · PhotoAtlas'
+            : '© OpenStreetMap · PhotoAtlas';
+      ctx.font = '500 10px sans-serif';
+      const attrW = ctx.measureText(attrText).width + 14;
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillRect(size.x - attrW - 6, size.y - 22, attrW, 16);
+      ctx.fillStyle = '#334155';
+      ctx.fillText(attrText, size.x - attrW + 1, size.y - 10);
+
+      try {
+        return canvas.toDataURL('image/jpeg', 0.92);
+      } catch {
+        return null;
+      }
+    };
+
+    return () => {
+      mapCaptureRef.current = null;
+    };
+  }, [
+    mapCaptureRef,
+    mapLayer,
+    showSectionPaths,
+    routeGroups,
+    gpsPhotos,
+    workEntries,
+    sectionColorLookup,
+    timelineOrderLookup,
+  ]);
 
   const isPickingMode = Boolean(manualPinPhoto) || isPickingWorkLocation;
 
@@ -660,113 +1289,10 @@ export function PhotoMapViewport({
         isPickingMode ? 'cursor-crosshair' : ''
       }`}
     >
-      <GoogleMap
-        mapId="DEMO_MAP_ID"
-        mapTypeId={mapLayer}
-        defaultCenter={DEFAULT_CENTER}
-        defaultZoom={DEFAULT_ZOOM}
-        gestureHandling="greedy"
-        mapTypeControl={false}
-        fullscreenControl={false}
-        streetViewControl={true}
-        zoomControl={true}
-        internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-        onClick={handleMapClick}
-        style={{width: '100%', height: '100%'}}
-      >
-        <MapCameraController
-          points={allPoints}
-          selectedTarget={selectedTarget}
-          fitTrigger={fitTrigger}
-          focusTrigger={focusTrigger}
-        />
-
-        <SectionRoutesOverlay
-          groups={routeGroups}
-          visible={showSectionPaths}
-          onDistancesComputed={onRoadDistancesComputed}
-        />
-
-        {gpsPhotos.map((photo, index) => {
-          let zIndex = index;
-          if (hoveredPhotoId === photo.id) zIndex = Z_INDEX_HOVER;
-          if (selectedPhotoId === photo.id) zIndex = Z_INDEX_SELECTED;
-          const color = photo.sectionId
-            ? sectionColorLookup[photo.sectionId] || '#2563EB'
-            : '#2563EB';
-
-          return (
-            <PhotoMarkerPin
-              key={photo.id}
-              photo={photo}
-              sectionColor={color}
-              isSelected={selectedPhotoId === photo.id}
-              isHovered={hoveredPhotoId === photo.id}
-              zIndex={zIndex}
-              orderIndex={timelineOrderLookup[photo.id]}
-              showOrderBadge={showSectionPaths}
-              onSelect={handlePhotoMarkerSelect}
-              onHoverChange={onHoverPhoto}
-            />
-          );
-        })}
-
-        {workEntries.map((entry) => (
-          <WorkEntryMarkerPin
-            key={entry.id}
-            entry={entry}
-            sectionColor={
-              entry.sectionId
-                ? sectionColorLookup[entry.sectionId] || '#0F172A'
-                : '#0F172A'
-            }
-            isSelected={selectedEntryId === entry.id}
-            onSelect={handleEntryMarkerSelect}
-          />
-        ))}
-
-        {infoPhoto && anchorMarker && (
-          <InfoWindow
-            anchor={anchorMarker}
-            maxWidth={270}
-            pixelOffset={[0, -4]}
-            onCloseClick={() => setInfoOpenForPhotoId(null)}
-          >
-            <div className="p-0.5 text-slate-900 font-sans">
-              <div className="w-full h-32 rounded-md overflow-hidden bg-slate-100 mb-2">
-                <PhotoThumbnail
-                  src={infoPhoto.previewUrl}
-                  fallbackSrc={infoPhoto.fallbackPreviewUrl}
-                  alt={infoPhoto.fileName}
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <p className="text-xs font-semibold text-slate-900 truncate">
-                {infoPhoto.location?.shortAddress || infoPhoto.fileName}
-              </p>
-              {infoPhoto.location?.formattedAddress && (
-                <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
-                  {infoPhoto.location.formattedAddress}
-                </p>
-              )}
-              <div className="flex items-center justify-between gap-2 mt-2 pt-1.5 border-t border-slate-100 text-[11px] text-slate-500">
-                <span className="font-mono tabular-nums">
-                  {formatDecimalCoords(infoPhoto.lat, infoPhoto.lng)}
-                </span>
-                <a
-                  href={`https://www.google.com/maps/search/?api=1&query=${infoPhoto.lat},${infoPhoto.lng}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap shrink-0"
-                >
-                  지도
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-            </div>
-          </InfoWindow>
-        )}
-      </GoogleMap>
+      {/* Isolated stacking context keeps Leaflet's internal z-400..1000 panes below React overlays */}
+      <div className="w-full h-full isolate z-0">
+        <div ref={mapContainerRef} className="w-full h-full" />
+      </div>
 
       {/* Top Floating Map Controls */}
       <div className="absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 pointer-events-none z-10">
@@ -939,7 +1465,7 @@ export function PhotoMapViewport({
               </button>
             </div>
             <p className="text-xs text-slate-400 mt-3.5">
-              JPG · HEIC · PNG · WebP 지원 · 기간별 작업 진행도 체크 가능
+              OpenStreetMap 기반 무료 지도 · JPG · HEIC · PNG · WebP 지원
             </p>
           </div>
         </div>

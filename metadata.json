@@ -2,5 +2,7 @@
   "name": "PhotoAtlas — GPS 사진 위치 지도",
   "description": "GPS 메타데이터(EXIF)가 포함된 사진을 업로드하면 촬영 위치와 주소를 Google 지도에 자동으로 표시하는 포토 매핑 스튜디오",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

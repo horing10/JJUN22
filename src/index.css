@@ -31,3 +31,19 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+.photoatlas-marker-icon,
+.photoatlas-entry-icon,
+.photoatlas-arrow-icon {
+  background: transparent;
+  border: 0;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px -5px rgb(15 23 42 / 0.18);
+}
+
+.leaflet-popup-content {
+  margin: 10px;
+}

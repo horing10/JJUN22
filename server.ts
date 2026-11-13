@@ -11,73 +11,125 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
-function getMapsApiKey(): string {
-  return (
-    process.env.VITE_GOOGLE_MAPS_API_KEY ||
-    process.env.GOOGLE_MAPS_API_KEY ||
-    ''
+interface NormalizedLocation {
+  formattedAddress: string;
+  shortAddress: string;
+  roadAddress?: string;
+  granularity?: string;
+  country?: string;
+  locality?: string;
+  neighborhood?: string;
+  placeId?: string;
+  plusCode?: string;
+}
+
+const geocodeCache: Record<string, NormalizedLocation> = {};
+const routeCache: Record<
+  string,
+  {path: Array<{lat: number; lng: number}>; distanceMeters: number}
+> = {};
+
+// Polite sequential rate gate for OpenStreetMap Nominatim (max ~1 req/sec)
+let lastNominatimCallMs = 0;
+let nominatimQueue: Promise<void> = Promise.resolve();
+
+function scheduleNominatim<T>(fn: () => Promise<T>): Promise<T> {
+  const next = nominatimQueue.then(async () => {
+    const elapsed = Date.now() - lastNominatimCallMs;
+    if (elapsed < 1050) {
+      await new Promise((r) => setTimeout(r, 1050 - elapsed));
+    }
+    lastNominatimCallMs = Date.now();
+    return fn();
+  });
+  nominatimQueue = next.then(
+    () => undefined,
+    () => undefined
   );
+  return next;
 }
 
-interface AddressComponentV4 {
-  longText?: string;
-  shortText?: string;
-  types?: string[];
+interface NominatimAddress {
+  country?: string;
+  province?: string;
+  state?: string;
+  city?: string;
+  town?: string;
+  village?: string;
+  borough?: string;
+  county?: string;
+  city_district?: string;
+  district?: string;
+  suburb?: string;
+  quarter?: string;
+  neighbourhood?: string;
+  road?: string;
+  pedestrian?: string;
+  footway?: string;
+  house_number?: string;
+  building?: string;
+  amenity?: string;
 }
 
-interface AddressComponentLegacy {
-  long_name?: string;
-  short_name?: string;
-  types?: string[];
-}
+function formatNominatimResult(data: {
+  place_id?: number;
+  display_name?: string;
+  type?: string;
+  address?: NominatimAddress;
+}): NormalizedLocation {
+  const addr = data.address || {};
+  const region = addr.city || addr.province || addr.state;
+  const district =
+    addr.borough || addr.city_district || addr.county || addr.district;
+  const town =
+    addr.town ||
+    addr.village ||
+    addr.suburb ||
+    addr.quarter ||
+    addr.neighbourhood;
+  const roadName = addr.road || addr.pedestrian || addr.footway;
+  const roadAddress = [roadName, addr.house_number].filter(Boolean).join(' ');
 
-function extractComponent(
-  components: Array<AddressComponentV4 | AddressComponentLegacy> | undefined,
-  targetTypes: string[]
-): string | undefined {
-  if (!components) return undefined;
-  for (const target of targetTypes) {
-    const match = components.find((c) => c.types?.includes(target));
-    if (match) {
-      if ('longText' in match) {
-        return match.longText;
-      }
-      return (match as AddressComponentLegacy).long_name;
+  // Deduplicate adjacent Korean hierarchy tokens
+  const fullParts: string[] = [];
+  for (const part of [region, district, town, roadAddress, addr.building]) {
+    if (part && !fullParts.includes(part)) {
+      fullParts.push(part);
     }
   }
-  return undefined;
-}
 
-function pickBestResult<T extends {types?: string[]; granularity?: string}>(
-  results: T[]
-): T | undefined {
-  if (!results.length) return undefined;
-  const preferredTypes = [
-    'street_address',
-    'premise',
-    'subpremise',
-    'establishment',
-    'point_of_interest',
-    'route',
-    'intersection',
-  ];
-  for (const t of preferredTypes) {
-    const found = results.find((r) => r.types?.includes(t));
-    if (found) return found;
+  const formattedAddress =
+    fullParts.length > 0
+      ? fullParts.join(' ')
+      : data.display_name || '위치 확인됨';
+
+  const shortParts: string[] = [];
+  for (const part of [district || region, roadAddress || town || addr.amenity]) {
+    if (part && !shortParts.includes(part)) {
+      shortParts.push(part);
+    }
   }
-  const rooftop = results.find((r) => r.granularity === 'ROOFTOP');
-  return rooftop || results[0];
+
+  const shortAddress =
+    shortParts.length > 0 ? shortParts.join(' ') : formattedAddress;
+
+  return {
+    formattedAddress,
+    shortAddress,
+    roadAddress: roadAddress || undefined,
+    granularity: data.type,
+    country: addr.country,
+    locality: district || region,
+    neighborhood: town,
+    placeId: data.place_id ? String(data.place_id) : undefined,
+  };
 }
 
 async function createServer() {
   const app = express();
   app.use(express.json());
 
-  app.get('/api/maps-config', (_req, res) => {
-    const apiKey = getMapsApiKey();
-    res.json({apiKey});
-  });
-
+  // Free Reverse Geocoding via OpenStreetMap Nominatim (no API key required)
   app.get('/api/reverse-geocode', async (req, res) => {
     const latRaw = Number(req.query.lat);
     const lngRaw = Number(req.query.lng);
@@ -95,185 +147,141 @@ async function createServer() {
       return;
     }
 
-    const apiKey = getMapsApiKey();
-    if (!apiKey) {
-      res.status(503).json({error: 'Google Maps API key not configured'});
+    const cacheKey = `${latRaw.toFixed(5)},${lngRaw.toFixed(5)},${lang}`;
+    if (geocodeCache[cacheKey]) {
+      res.json(geocodeCache[cacheKey]);
       return;
     }
 
     try {
-      // Primary: Geocoding API v4
-      const v4Url = new URL(
-        'https://geocode.googleapis.com/v4/geocode/location'
-      );
-      v4Url.searchParams.set('location.latitude', String(latRaw));
-      v4Url.searchParams.set('location.longitude', String(lngRaw));
-      v4Url.searchParams.set('languageCode', lang);
+      const result = await scheduleNominatim(async () => {
+        const url = new URL('https://nominatim.openstreetmap.org/reverse');
+        url.searchParams.set('format', 'jsonv2');
+        url.searchParams.set('lat', String(latRaw));
+        url.searchParams.set('lon', String(lngRaw));
+        url.searchParams.set('zoom', '18');
+        url.searchParams.set('addressdetails', '1');
+        url.searchParams.set('accept-language', lang);
 
-      const v4Response = await fetch(v4Url.toString(), {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask':
-            'results.placeId,results.formattedAddress,results.addressComponents,results.types,results.granularity,plusCode',
-          'X-Goog-Maps-Solution-ID': 'gmp_mcp_codeassist_v1_aistudio',
-        },
-      });
-
-      if (v4Response.status === 429) {
-        res.status(429).json({
-          error: 'Google Maps quota exceeded',
-          quotaExceeded: true,
+        const response = await fetch(url.toString(), {
+          headers: {
+            'User-Agent': 'PhotoAtlas-FieldMapper/1.0',
+            Accept: 'application/json',
+          },
         });
-        return;
-      }
 
-      if (v4Response.ok) {
-        const data = (await v4Response.json()) as {
-          error?: {status?: string};
-          results?: Array<{
-            placeId?: string;
-            formattedAddress?: string;
-            addressComponents?: AddressComponentV4[];
-            types?: string[];
-            granularity?: string;
-          }>;
-          plusCode?: {compoundCode?: string; globalCode?: string};
+        if (!response.ok) {
+          throw new Error(`Nominatim status ${response.status}`);
+        }
+
+        const data = (await response.json()) as {
+          place_id?: number;
+          display_name?: string;
+          type?: string;
+          address?: NominatimAddress;
+          error?: string;
         };
 
-        if (data.error?.status === 'RESOURCE_EXHAUSTED') {
-          res.status(429).json({
-            error: 'Google Maps quota exceeded',
-            quotaExceeded: true,
-          });
-          return;
+        if (data.error) {
+          return {
+            formattedAddress: '',
+            shortAddress: '',
+          };
         }
 
-        const primary = pickBestResult(data.results || []);
-        if (primary) {
-          const components = primary.addressComponents;
-          const country = extractComponent(components, ['country']);
-          const locality = extractComponent(components, [
-            'locality',
-            'administrative_area_level_1',
-            'administrative_area_level_2',
-          ]);
-          const neighborhood = extractComponent(components, [
-            'sublocality_level_2',
-            'sublocality_level_1',
-            'sublocality',
-            'neighborhood',
-            'administrative_area_level_3',
-          ]);
-          const route = extractComponent(components, ['route']);
-          const streetNumber = extractComponent(components, ['street_number']);
-          const roadAddress = [route, streetNumber].filter(Boolean).join(' ');
-          const shortAddress =
-            [locality, roadAddress || neighborhood].filter(Boolean).join(' ') ||
-            primary.formattedAddress ||
-            '위치 확인됨';
+        return formatNominatimResult(data);
+      });
 
-          res.json({
-            formattedAddress: primary.formattedAddress || '',
-            shortAddress,
-            roadAddress: roadAddress || undefined,
-            granularity: primary.granularity,
-            country,
-            locality,
-            neighborhood,
-            placeId: primary.placeId,
-            plusCode:
-              data.plusCode?.compoundCode || data.plusCode?.globalCode,
-          });
-          return;
-        }
+      if (result.formattedAddress) {
+        geocodeCache[cacheKey] = result;
       }
-
-      // Fallback: Standard Geocoding REST API (still server-side to prevent CORS)
-      const legacyUrl = new URL(
-        'https://maps.googleapis.com/maps/api/geocode/json'
-      );
-      legacyUrl.searchParams.set('latlng', `${latRaw},${lngRaw}`);
-      legacyUrl.searchParams.set('language', lang);
-      legacyUrl.searchParams.set('key', apiKey);
-
-      const legacyResponse = await fetch(legacyUrl.toString());
-      if (legacyResponse.status === 429) {
-        res.status(429).json({
-          error: 'Google Maps quota exceeded',
-          quotaExceeded: true,
-        });
-        return;
-      }
-
-      const legacyData = (await legacyResponse.json()) as {
-        status?: string;
-        results?: Array<{
-          place_id?: string;
-          formatted_address?: string;
-          types?: string[];
-          geometry?: {location_type?: string};
-          address_components?: AddressComponentLegacy[];
-        }>;
-        plus_code?: {compound_code?: string; global_code?: string};
-      };
-
-      if (legacyData.status === 'OVER_QUERY_LIMIT') {
-        res.status(429).json({
-          error: 'Google Maps quota exceeded',
-          quotaExceeded: true,
-        });
-        return;
-      }
-
-      const first = pickBestResult(legacyData.results || []);
-      if (first) {
-        const components = first.address_components;
-        const country = extractComponent(components, ['country']);
-        const locality = extractComponent(components, [
-          'locality',
-          'administrative_area_level_1',
-          'administrative_area_level_2',
-        ]);
-        const neighborhood = extractComponent(components, [
-          'sublocality_level_2',
-          'sublocality_level_1',
-          'sublocality',
-          'neighborhood',
-          'administrative_area_level_3',
-        ]);
-        const route = extractComponent(components, ['route']);
-        const streetNumber = extractComponent(components, ['street_number']);
-        const roadAddress = [route, streetNumber].filter(Boolean).join(' ');
-        const shortAddress =
-          [locality, roadAddress || neighborhood].filter(Boolean).join(' ') ||
-          first.formatted_address ||
-          '위치 확인됨';
-
-        res.json({
-          formattedAddress: first.formatted_address || '',
-          shortAddress,
-          roadAddress: roadAddress || undefined,
-          granularity: first.geometry?.location_type,
-          country,
-          locality,
-          neighborhood,
-          placeId: first.place_id,
-          plusCode:
-            legacyData.plus_code?.compound_code ||
-            legacyData.plus_code?.global_code,
-        });
-        return;
-      }
-
+      res.json(result);
+    } catch (error) {
+      console.warn('Nominatim reverse geocode warning:', error);
       res.json({
         formattedAddress: '',
         shortAddress: '',
       });
-    } catch (error) {
-      console.error('Reverse geocode proxy error:', error);
-      res.status(502).json({error: 'Reverse geocoding failed'});
+    }
+  });
+
+  // Free Road Routing via Open Source Routing Machine (OSRM, no API key required)
+  app.post('/api/route', async (req, res) => {
+    const body = req.body as {
+      points?: Array<{lat: number; lng: number}>;
+    };
+    const points = Array.isArray(body?.points) ? body.points : [];
+
+    const validPoints = points.filter(
+      (p) =>
+        p &&
+        Number.isFinite(p.lat) &&
+        Number.isFinite(p.lng) &&
+        p.lat >= -90 &&
+        p.lat <= 90 &&
+        p.lng >= -180 &&
+        p.lng <= 180
+    );
+
+    if (validPoints.length < 2) {
+      res.json({path: validPoints, distanceMeters: 0, fallback: true});
+      return;
+    }
+
+    const trimmed = validPoints.slice(0, 50);
+    const sig = trimmed
+      .map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`)
+      .join('|');
+
+    if (routeCache[sig]) {
+      res.json(routeCache[sig]);
+      return;
+    }
+
+    try {
+      const coordsParam = trimmed.map((p) => `${p.lng},${p.lat}`).join(';');
+      const url = `https://router.project-osrm.org/route/v1/driving/${coordsParam}?overview=full&geometries=geojson&steps=false`;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 7000);
+
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'PhotoAtlas-FieldMapper/1.0',
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        res.json({path: trimmed, distanceMeters: 0, fallback: true});
+        return;
+      }
+
+      const data = (await response.json()) as {
+        code?: string;
+        routes?: Array<{
+          distance?: number;
+          geometry?: {
+            coordinates?: Array<[number, number]>;
+          };
+        }>;
+      };
+
+      const route = data.routes?.[0];
+      const coords = route?.geometry?.coordinates;
+      if (data.code === 'Ok' && Array.isArray(coords) && coords.length >= 2) {
+        const path = coords.map(([lng, lat]) => ({lat, lng}));
+        const distanceMeters = Math.round(route?.distance || 0);
+        const result = {path, distanceMeters};
+        routeCache[sig] = result;
+        res.json(result);
+        return;
+      }
+
+      res.json({path: trimmed, distanceMeters: 0, fallback: true});
+    } catch {
+      res.json({path: trimmed, distanceMeters: 0, fallback: true});
     }
   });
 

@@ -355,10 +355,10 @@ export function PhotoInspector({
                 위치 변경
               </button>
               <a
-                href={`https://www.google.com/maps/search/?api=1&query=${photo.lat},${photo.lng}`}
+                href={`https://www.openstreetmap.org/?mlat=${photo.lat}&mlon=${photo.lng}#map=17/${photo.lat}/${photo.lng}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                title="Google 지도에서 열기"
+                title="OpenStreetMap에서 열기"
                 className="inline-flex items-center justify-center p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-blue-600 transition-colors shrink-0"
               >
                 <ExternalLink className="w-3.5 h-3.5" />

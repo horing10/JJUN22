@@ -1,6 +1,6 @@
-import {APIProvider} from '@vis.gl/react-google-maps';
-import {ImagePlus, Upload} from 'lucide-react';
+import {FileText, ImagePlus, Upload} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {PdfExportModal} from './components/PdfExportModal';
 import {PhotoInspector} from './components/PhotoInspector';
 import {PhotoMapViewport} from './components/PhotoMapViewport';
 import {PhotoSidebar} from './components/PhotoSidebar';
@@ -40,14 +40,6 @@ import {
 } from './utils/storage';
 
 export default function App() {
-  const [apiKey, setApiKey] = useState<string>(
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
-  );
-  const [isLoadingKey, setIsLoadingKey] = useState<boolean>(
-    !import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-  );
-  const [quotaExceeded, setQuotaExceeded] = useState(false);
-
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [sections, setSections] = useState<WorkSection[]>([]);
   const [workEntries, setWorkEntries] = useState<WorkEntry[]>([]);
@@ -87,8 +79,10 @@ export default function App() {
 
   const [fitTrigger, setFitTrigger] = useState(0);
   const [focusTrigger, setFocusTrigger] = useState(0);
+  const [pdfModalOpen, setPdfModalOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mapCaptureRef = useRef<(() => Promise<string | null>) | null>(null);
   const dragCounterRef = useRef(0);
   const photosRef = useRef<PhotoItem[]>([]);
 
@@ -135,36 +129,6 @@ export default function App() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    const handleQuota = () => setQuotaExceeded(true);
-    window.addEventListener('gmp-quota-exceeded', handleQuota);
-    return () => window.removeEventListener('gmp-quota-exceeded', handleQuota);
-  }, []);
-
-  useEffect(() => {
-    if (apiKey) {
-      setIsLoadingKey(false);
-      return;
-    }
-
-    let cancelled = false;
-    fetch('/api/maps-config')
-      .then((res) => res.json())
-      .then((data: {apiKey?: string}) => {
-        if (!cancelled && data.apiKey) {
-          setApiKey(data.apiKey);
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setIsLoadingKey(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [apiKey]);
 
   const enrichPhotoLocation = useCallback(
     async (photoId: string, lat: number, lng: number) => {
@@ -646,6 +610,11 @@ export default function App() {
     [workEntries, selectedEntryId]
   );
 
+  const activeSection = useMemo(
+    () => sections.find((s) => s.id === activeSectionId) || null,
+    [sections, activeSectionId]
+  );
+
   const manualPinPhoto = useMemo(
     () => photos.find((p) => p.id === manualPinPhotoId) || null,
     [photos, manualPinPhotoId]
@@ -684,24 +653,6 @@ export default function App() {
         }
       }}
     >
-      {/* Required Google Maps Demo Key Quota Banner */}
-      {quotaExceeded && (
-        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
-          <span>
-            Google Maps Platform quota reached. If you are the app owner, visit{' '}
-            <a
-              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline font-semibold text-amber-950 hover:text-amber-800"
-            >
-              maps developer site
-            </a>{' '}
-            for instructions to update your account.
-          </span>
-        </div>
-      )}
-
       {/* Top Navigation Bar (Strict 3-Zone Contract) */}
       <header className="h-14 shrink-0 bg-white border-b border-slate-200 px-4 lg:px-6 flex items-center justify-between gap-8">
         <a
@@ -765,7 +716,17 @@ export default function App() {
           </button>
         </nav>
 
-        <div className="flex items-center shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          {(photos.length > 0 || sections.length > 0 || workEntries.length > 0) && (
+            <button
+              type="button"
+              onClick={() => setPdfModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <FileText className="w-4 h-4 text-blue-600" />
+              <span className="hidden sm:inline">PDF 보고서</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={handleTriggerUpload}
@@ -858,77 +819,55 @@ export default function App() {
           onExportGeoJson={() =>
             exportPhotosAsGeoJson(photos, sections, workEntries)
           }
+          onOpenPdfExport={() => setPdfModalOpen(true)}
         />
 
         <section
-          aria-label="Google 지도 뷰포트"
+          aria-label="지도 뷰포트"
           className="flex-1 relative min-h-[360px] lg:min-h-0 h-full"
         >
-          {isLoadingKey ? (
-            <div className="w-full h-full flex items-center justify-center bg-slate-100 text-sm text-slate-500">
-              Google 지도를 불러오는 중입니다...
-            </div>
-          ) : !apiKey ? (
-            <div className="w-full h-full flex items-center justify-center bg-slate-100 p-6">
-              <div className="max-w-md bg-white border border-slate-200 rounded-xl p-6 text-center shadow-sm">
-                <p className="text-sm font-semibold text-slate-900">
-                  Google Maps API 키가 필요합니다
-                </p>
-                <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
-                  Google Maps Platform 설정을 완료하면 지도와 도로 연결·주소 변환 기능을 사용할 수 있습니다.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <APIProvider
-              apiKey={apiKey}
-              libraries={['marker', 'routes']}
-              language="ko"
-              region="KR"
-            >
-              <PhotoMapViewport
-                photos={visiblePhotosOnMap}
-                sections={visibleSections}
-                workEntries={filteredEntries}
-                activeSectionId={activeSectionId}
-                selectedPhotoId={selectedPhotoId}
-                selectedEntryId={selectedEntryId}
-                hoveredPhotoId={hoveredPhotoId}
-                manualPinPhoto={manualPinPhoto}
-                isPickingWorkLocation={isPickingWorkLocation}
-                mapLayer={mapLayer}
-                showSectionPaths={showSectionPaths}
-                fitTrigger={fitTrigger}
-                focusTrigger={focusTrigger}
-                sectionProgressLookup={sectionProgressLookup}
-                onSelectPhoto={handleSelectPhoto}
-                onSelectEntry={handleSelectEntry}
-                onSelectSectionFilter={(secId) => {
-                  setActiveSectionId(secId);
-                  setFitTrigger((n) => n + 1);
-                }}
-                onHoverPhoto={setHoveredPhotoId}
-                onMapLayerChange={setMapLayer}
-                onToggleSectionPaths={() => setShowSectionPaths((v) => !v)}
-                onFitAll={() => setFitTrigger((n) => n + 1)}
-                onManualPinAssign={handleManualPinAssign}
-                onCancelManualPin={() => setManualPinPhotoId(null)}
-                onPickWorkLocation={(lat, lng) => {
-                  setIsPickingWorkLocation(false);
-                  setPickedWorkCoords({lat, lng});
-                  setWorkModalOpen(true);
-                }}
-                onCancelWorkLocationPick={() => setIsPickingWorkLocation(false)}
-                onStartWorkEntryPick={() => {
-                  setManualPinPhotoId(null);
-                  setEditingEntry(null);
-                  setIsPickingWorkLocation(true);
-                }}
-                onTriggerUpload={handleTriggerUpload}
-                onRoadDistancesComputed={handleRoadDistancesComputed}
-              />
-            </APIProvider>
-          )}
+          <PhotoMapViewport
+            photos={visiblePhotosOnMap}
+            sections={visibleSections}
+            workEntries={filteredEntries}
+            activeSectionId={activeSectionId}
+            selectedPhotoId={selectedPhotoId}
+            selectedEntryId={selectedEntryId}
+            hoveredPhotoId={hoveredPhotoId}
+            manualPinPhoto={manualPinPhoto}
+            isPickingWorkLocation={isPickingWorkLocation}
+            mapLayer={mapLayer}
+            showSectionPaths={showSectionPaths}
+            fitTrigger={fitTrigger}
+            focusTrigger={focusTrigger}
+            sectionProgressLookup={sectionProgressLookup}
+            onSelectPhoto={handleSelectPhoto}
+            onSelectEntry={handleSelectEntry}
+            onSelectSectionFilter={(secId) => {
+              setActiveSectionId(secId);
+              setFitTrigger((n) => n + 1);
+            }}
+            onHoverPhoto={setHoveredPhotoId}
+            onMapLayerChange={setMapLayer}
+            onToggleSectionPaths={() => setShowSectionPaths((v) => !v)}
+            onFitAll={() => setFitTrigger((n) => n + 1)}
+            onManualPinAssign={handleManualPinAssign}
+            onCancelManualPin={() => setManualPinPhotoId(null)}
+            onPickWorkLocation={(lat, lng) => {
+              setIsPickingWorkLocation(false);
+              setPickedWorkCoords({lat, lng});
+              setWorkModalOpen(true);
+            }}
+            onCancelWorkLocationPick={() => setIsPickingWorkLocation(false)}
+            onStartWorkEntryPick={() => {
+              setManualPinPhotoId(null);
+              setEditingEntry(null);
+              setIsPickingWorkLocation(true);
+            }}
+            onTriggerUpload={handleTriggerUpload}
+            onRoadDistancesComputed={handleRoadDistancesComputed}
+            mapCaptureRef={mapCaptureRef}
+          />
 
           {(selectedPhoto || selectedEntry) && (
             <PhotoInspector
@@ -1004,6 +943,27 @@ export default function App() {
           }}
           onUploadAttachPhotos={(fileList) => processPhotoFiles(fileList, false)}
           onSave={handleSaveWorkEntry}
+        />
+      )}
+
+      {pdfModalOpen && (
+        <PdfExportModal
+          activeSection={activeSection}
+          dateRange={dateRange}
+          sections={
+            activeSectionId
+              ? visibleSections.filter((s) => s.id === activeSectionId)
+              : visibleSections
+          }
+          allSections={sections}
+          photos={visiblePhotosOnMap}
+          allPhotos={photos}
+          workEntries={filteredEntries}
+          sectionProgressLookup={sectionProgressLookup}
+          onCaptureMap={() =>
+            mapCaptureRef.current ? mapCaptureRef.current() : Promise.resolve(null)
+          }
+          onClose={() => setPdfModalOpen(false)}
         />
       )}
 

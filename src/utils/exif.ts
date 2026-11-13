@@ -211,24 +211,11 @@ export async function reverseGeocodeCoords(
       `/api/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&lang=ko`
     );
 
-    if (res.status === 429) {
-      window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-      return null;
-    }
-
-    const data = (await res.json()) as ResolvedLocation & {
-      quotaExceeded?: boolean;
-      error?: string;
-    };
-
-    if (data.quotaExceeded) {
-      window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-      return null;
-    }
-
     if (!res.ok) {
       return null;
     }
+
+    const data = (await res.json()) as ResolvedLocation;
 
     if (!data.formattedAddress && !data.shortAddress) {
       return null;

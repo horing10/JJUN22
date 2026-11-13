@@ -6,6 +6,7 @@ import {
   ClipboardList,
   Download,
   Edit3,
+  FileText,
   FolderPlus,
   MapPin,
   MapPinOff,
@@ -70,6 +71,7 @@ interface PhotoSidebarProps {
   onClearAll: () => void;
   onTriggerUpload: () => void;
   onExportGeoJson: () => void;
+  onOpenPdfExport: () => void;
 }
 
 const STATUS_LABELS: Record<WorkStatus, string> = {
@@ -115,6 +117,7 @@ export function PhotoSidebar({
   onClearAll,
   onTriggerUpload,
   onExportGeoJson,
+  onOpenPdfExport,
 }: PhotoSidebarProps) {
   const gpsCount = photos.filter((p) => p.hasGps).length;
   const noGpsCount = photos.length - gpsCount;
@@ -705,16 +708,26 @@ export function PhotoSidebar({
           >
             전체 초기화
           </button>
-          {gpsCount > 0 && (
+          <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={onExportGeoJson}
-              className="inline-flex items-center gap-1.5 text-slate-700 hover:text-blue-600 font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={onOpenPdfExport}
+              className="inline-flex items-center gap-1.5 text-blue-700 hover:text-blue-800 font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5" />
-              작업구간 GeoJSON 내보내기
+              <FileText className="w-3.5 h-3.5" />
+              PDF 보고서
             </button>
-          )}
+            {gpsCount > 0 && (
+              <button
+                type="button"
+                onClick={onExportGeoJson}
+                className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-900 font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                GeoJSON
+              </button>
+            )}
+          </div>
         </div>
       )}
     </aside>
