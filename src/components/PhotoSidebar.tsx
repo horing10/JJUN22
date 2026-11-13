@@ -8,6 +8,7 @@ import {
   Edit3,
   FileText,
   FolderPlus,
+  GitMerge,
   MapPin,
   MapPinOff,
   Plus,
@@ -56,6 +57,7 @@ interface PhotoSidebarProps {
   onDateRangeChange: (range: DateRangeFilter) => void;
   onSelectSectionFilter: (sectionId: string | null) => void;
   onOpenNewSection: () => void;
+  onOpenMergeSections: () => void;
   onEditSection: (section: WorkSection) => void;
   onDeleteSection: (sectionId: string) => void;
   onAutoClusterSections: () => void;
@@ -102,6 +104,7 @@ export function PhotoSidebar({
   onDateRangeChange,
   onSelectSectionFilter,
   onOpenNewSection,
+  onOpenMergeSections,
   onEditSection,
   onDeleteSection,
   onAutoClusterSections,
@@ -272,19 +275,35 @@ export function PhotoSidebar({
               type="button"
               onClick={onAutoClusterSections}
               disabled={gpsCount === 0}
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-800 disabled:text-slate-300 cursor-pointer disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-800 disabled:text-slate-300 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              GPS 자동 구간 분석
+              GPS 자동 분석
             </button>
-            <button
-              type="button"
-              onClick={onOpenNewSection}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 transition-colors cursor-pointer"
-            >
-              <FolderPlus className="w-3.5 h-3.5" />
-              구간 추가
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={onOpenMergeSections}
+                disabled={allSections.length < 2}
+                title={
+                  allSections.length < 2
+                    ? '2개 이상의 작업구간이 있을 때 합칠 수 있습니다'
+                    : '다른 작업구간끼리 합쳐서 도로로 연결'
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-blue-50 hover:bg-blue-100 text-xs font-medium text-blue-700 disabled:bg-slate-50 disabled:text-slate-300 transition-colors cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+              >
+                <GitMerge className="w-3.5 h-3.5" />
+                구간 합치기
+              </button>
+              <button
+                type="button"
+                onClick={onOpenNewSection}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <FolderPlus className="w-3.5 h-3.5" />
+                구간 추가
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100">

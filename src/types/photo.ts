@@ -52,6 +52,7 @@ export interface PhotoItem {
   location?: ResolvedLocation;
   isGeocoding?: boolean;
   sectionId?: string;
+  routeOrder?: number;
   workEntryId?: string;
   teamName?: string;
   isChecked?: boolean;

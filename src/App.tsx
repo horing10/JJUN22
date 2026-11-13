@@ -1,5 +1,9 @@
 import {FileText, ImagePlus, Upload} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {
+  MergeSectionsModal,
+  type MergeSectionsPayload,
+} from './components/MergeSectionsModal';
 import {PdfExportModal} from './components/PdfExportModal';
 import {PhotoInspector} from './components/PhotoInspector';
 import {PhotoMapViewport} from './components/PhotoMapViewport';
@@ -25,6 +29,7 @@ import {
 } from './utils/exif';
 import {
   autoClusterPhotosIntoSections,
+  buildConnectedPhotoOrder,
   computeSectionProgress,
   getPhotoDateKey,
   isDateInRange,
@@ -80,6 +85,7 @@ export default function App() {
   const [fitTrigger, setFitTrigger] = useState(0);
   const [focusTrigger, setFocusTrigger] = useState(0);
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mapCaptureRef = useRef<(() => Promise<string | null>) | null>(null);
@@ -266,9 +272,12 @@ export default function App() {
     setSections(nextSections);
     setPhotos((prev) =>
       prev.map((p) =>
-        assignments[p.id] ? {...p, sectionId: assignments[p.id]} : p
+        assignments[p.id]
+          ? {...p, sectionId: assignments[p.id], routeOrder: undefined}
+          : {...p, routeOrder: undefined}
       )
     );
+    setRoadDistances({});
     setActiveSectionId(null);
     setShowSectionPaths(true);
     setFitTrigger((n) => n + 1);
@@ -334,7 +343,9 @@ export default function App() {
     (photoId: string, sectionId: string) => {
       setPhotos((prev) =>
         prev.map((p) =>
-          p.id === photoId ? {...p, sectionId: sectionId || undefined} : p
+          p.id === photoId
+            ? {...p, sectionId: sectionId || undefined, routeOrder: undefined}
+            : p
         )
       );
     },
@@ -379,6 +390,109 @@ export default function App() {
     );
     setActiveSectionId((prev) => (prev === sectionId ? null : prev));
   }, []);
+
+  const handleMergeSections = useCallback(
+    (payload: MergeSectionsPayload) => {
+      const {
+        orderedSectionIds,
+        connectionMode,
+        includeUnassignedGps,
+        name,
+        color,
+        status,
+        startDate,
+        endDate,
+        memo,
+      } = payload;
+      if (orderedSectionIds.length < 2) return;
+
+      const targetSectionId = orderedSectionIds[0];
+      const absorbedSet = new Set(orderedSectionIds);
+
+      // Include unassigned GPS photos temporarily if requested
+      const workingPhotos = photosRef.current.map((p) => {
+        if (absorbedSet.has(p.sectionId || '')) return p;
+        if (includeUnassignedGps && p.hasGps && !p.sectionId) {
+          return {...p, sectionId: orderedSectionIds[orderedSectionIds.length - 1]};
+        }
+        return p;
+      });
+
+      const orderedPhotoIds = buildConnectedPhotoOrder(
+        workingPhotos,
+        orderedSectionIds,
+        connectionMode
+      );
+      const orderRankLookup: Record<string, number> = {};
+      orderedPhotoIds.forEach((pid, idx) => {
+        orderRankLookup[pid] = idx;
+      });
+
+      const nextPhotos = workingPhotos.map((p) => {
+        const belongs =
+          (p.sectionId && absorbedSet.has(p.sectionId)) ||
+          (includeUnassignedGps && p.hasGps && !p.sectionId);
+        if (!belongs) return p;
+        return {
+          ...p,
+          sectionId: targetSectionId,
+          routeOrder: orderRankLookup[p.id],
+        };
+      });
+
+      const mergedPhotoCount = nextPhotos.filter(
+        (p) => p.sectionId === targetSectionId
+      ).length;
+
+      setSections((prev) => {
+        const primary = prev.find((s) => s.id === targetSectionId);
+        const existingMemos = prev
+          .filter((s) => absorbedSet.has(s.id) && s.memo)
+          .map((s) => s.memo as string);
+        const mergedSection: WorkSection = {
+          id: targetSectionId,
+          name,
+          color,
+          status,
+          startDate,
+          endDate,
+          targetPhotoCount: mergedPhotoCount || primary?.targetPhotoCount,
+          memo: memo || existingMemos.join(' / ') || undefined,
+          createdAt: primary?.createdAt || Date.now(),
+        };
+        return prev
+          .filter((s) => !absorbedSet.has(s.id) || s.id === targetSectionId)
+          .map((s) => (s.id === targetSectionId ? mergedSection : s));
+      });
+
+      setPhotos(nextPhotos);
+
+      setWorkEntries((prev) =>
+        prev.map((e) =>
+          e.sectionId && absorbedSet.has(e.sectionId)
+            ? {...e, sectionId: targetSectionId}
+            : e
+        )
+      );
+
+      setRoadDistances((prev) => {
+        const next = {...prev};
+        for (const id of orderedSectionIds) {
+          delete next[id];
+        }
+        return next;
+      });
+
+      setMergeModalOpen(false);
+      setActiveSectionId(targetSectionId);
+      setShowSectionPaths(true);
+      setFitTrigger((n) => n + 1);
+      setUploadNotice(
+        `${orderedSectionIds.length}개 작업구간(${mergedPhotoCount}장)을 "${name}"으로 합쳐 도로 경로를 연결했습니다.`
+      );
+    },
+    []
+  );
 
   const handleSaveWorkEntry = useCallback(
     (
@@ -795,6 +909,7 @@ export default function App() {
             setEditingSection(null);
             setSectionModalOpen(true);
           }}
+          onOpenMergeSections={() => setMergeModalOpen(true)}
           onEditSection={(sec) => {
             setEditingSection(sec);
             setSectionModalOpen(true);
@@ -964,6 +1079,18 @@ export default function App() {
             mapCaptureRef.current ? mapCaptureRef.current() : Promise.resolve(null)
           }
           onClose={() => setPdfModalOpen(false)}
+        />
+      )}
+
+      {mergeModalOpen && (
+        <MergeSectionsModal
+          sections={sections}
+          photos={photos}
+          workEntries={workEntries}
+          activeSectionId={activeSectionId}
+          sectionProgressLookup={sectionProgressLookup}
+          onClose={() => setMergeModalOpen(false)}
+          onMerge={handleMergeSections}
         />
       )}
 

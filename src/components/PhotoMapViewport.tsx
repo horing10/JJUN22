@@ -17,7 +17,7 @@ import type {
   WorkSection,
 } from '../types/photo';
 import {formatDecimalCoords} from '../utils/exif';
-import {formatDistance} from '../utils/geo';
+import {formatDistance, sortSectionPhotos} from '../utils/geo';
 
 const DEFAULT_CENTER: [number, number] = [37.5665, 126.978];
 const DEFAULT_ZOOM = 11;
@@ -525,11 +525,7 @@ export function PhotoMapViewport({
     const result: SectionRouteGroup[] = [];
     for (const [secId, list] of Object.entries(grouped)) {
       if (list.length < 2) continue;
-      const ordered = [...list].sort(
-        (a, b) =>
-          (a.exif.timestampMs ?? a.uploadedAt) -
-          (b.exif.timestampMs ?? b.uploadedAt)
-      );
+      const ordered = sortSectionPhotos(list);
       result.push({
         sectionId: secId,
         color:
@@ -546,13 +542,9 @@ export function PhotoMapViewport({
   const timelineOrderLookup = useMemo(() => {
     const lookup: Record<string, number> = {};
     for (const group of routeGroups) {
-      const groupPhotos = gpsPhotos
-        .filter((p) => (p.sectionId || '__unassigned__') === group.sectionId)
-        .sort(
-          (a, b) =>
-            (a.exif.timestampMs ?? a.uploadedAt) -
-            (b.exif.timestampMs ?? b.uploadedAt)
-        );
+      const groupPhotos = sortSectionPhotos(
+        gpsPhotos.filter((p) => (p.sectionId || '__unassigned__') === group.sectionId)
+      );
       groupPhotos.forEach((p, idx) => {
         lookup[p.id] = idx;
       });

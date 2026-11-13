@@ -228,7 +228,7 @@ async function createServer() {
       return;
     }
 
-    const trimmed = validPoints.slice(0, 50);
+    const trimmed = validPoints.slice(0, 180);
     const sig = trimmed
       .map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`)
       .join('|');
@@ -238,42 +238,80 @@ async function createServer() {
       return;
     }
 
-    try {
-      const coordsParam = trimmed.map((p) => `${p.lng},${p.lat}`).join(';');
+    const fetchOsrmChunk = async (
+      chunk: Array<{lat: number; lng: number}>
+    ): Promise<{path: Array<{lat: number; lng: number}>; distanceMeters: number} | null> => {
+      const coordsParam = chunk.map((p) => `${p.lng},${p.lat}`).join(';');
       const url = `https://router.project-osrm.org/route/v1/driving/${coordsParam}?overview=full&geometries=geojson&steps=false`;
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 7000);
+      try {
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'PhotoAtlas-FieldMapper/1.0',
+          },
+          signal: controller.signal,
+        });
+        if (!response.ok) return null;
 
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'PhotoAtlas-FieldMapper/1.0',
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
+        const data = (await response.json()) as {
+          code?: string;
+          routes?: Array<{
+            distance?: number;
+            geometry?: {
+              coordinates?: Array<[number, number]>;
+            };
+          }>;
+        };
 
-      if (!response.ok) {
+        const route = data.routes?.[0];
+        const coords = route?.geometry?.coordinates;
+        if (data.code === 'Ok' && Array.isArray(coords) && coords.length >= 2) {
+          return {
+            path: coords.map(([lng, lat]) => ({lat, lng})),
+            distanceMeters: Math.round(route?.distance || 0),
+          };
+        }
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    try {
+      const CHUNK_SIZE = 40;
+      if (trimmed.length <= CHUNK_SIZE) {
+        const single = await fetchOsrmChunk(trimmed);
+        if (single) {
+          routeCache[sig] = single;
+          res.json(single);
+          return;
+        }
         res.json({path: trimmed, distanceMeters: 0, fallback: true});
         return;
       }
 
-      const data = (await response.json()) as {
-        code?: string;
-        routes?: Array<{
-          distance?: number;
-          geometry?: {
-            coordinates?: Array<[number, number]>;
-          };
-        }>;
-      };
+      const combinedPath: Array<{lat: number; lng: number}> = [];
+      let totalDistance = 0;
 
-      const route = data.routes?.[0];
-      const coords = route?.geometry?.coordinates;
-      if (data.code === 'Ok' && Array.isArray(coords) && coords.length >= 2) {
-        const path = coords.map(([lng, lat]) => ({lat, lng}));
-        const distanceMeters = Math.round(route?.distance || 0);
-        const result = {path, distanceMeters};
+      for (let i = 0; i < trimmed.length - 1; i += CHUNK_SIZE - 1) {
+        const slice = trimmed.slice(i, i + CHUNK_SIZE);
+        if (slice.length < 2) break;
+        const seg = await fetchOsrmChunk(slice);
+        const segPoints = seg ? seg.path : slice;
+        if (combinedPath.length === 0) {
+          combinedPath.push(...segPoints);
+        } else {
+          combinedPath.push(...segPoints.slice(1));
+        }
+        if (seg) {
+          totalDistance += seg.distanceMeters;
+        }
+      }
+
+      if (combinedPath.length >= 2) {
+        const result = {path: combinedPath, distanceMeters: totalDistance};
         routeCache[sig] = result;
         res.json(result);
         return;

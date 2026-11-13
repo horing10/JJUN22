@@ -71,6 +71,114 @@ export function formatDistance(meters: number): string {
   return `${(meters / 1000).toFixed(2)} km`;
 }
 
+export type SectionConnectionMode =
+  | 'section-order'
+  | 'nearest-chain'
+  | 'chronological';
+
+export function sortSectionPhotos<T extends PhotoItem>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    const hasOrderA = typeof a.routeOrder === 'number';
+    const hasOrderB = typeof b.routeOrder === 'number';
+    if (hasOrderA && hasOrderB && a.routeOrder !== b.routeOrder) {
+      return (a.routeOrder as number) - (b.routeOrder as number);
+    }
+    if (hasOrderA !== hasOrderB) {
+      return hasOrderA ? -1 : 1;
+    }
+    const ta = a.exif.timestampMs ?? a.uploadedAt;
+    const tb = b.exif.timestampMs ?? b.uploadedAt;
+    return ta - tb;
+  });
+}
+
+/**
+ * Produces an ordered list of photo IDs when merging multiple sections across
+ * different locations so road connections follow the user's chosen sequence.
+ */
+export function buildConnectedPhotoOrder(
+  photos: PhotoItem[],
+  orderedSectionIds: string[],
+  mode: SectionConnectionMode
+): string[] {
+  const idSet = new Set(orderedSectionIds);
+  const targetPhotos = photos.filter(
+    (p) => p.sectionId && idSet.has(p.sectionId)
+  );
+  if (targetPhotos.length === 0) return [];
+
+  if (mode === 'chronological') {
+    return [...targetPhotos]
+      .sort(
+        (a, b) =>
+          (a.exif.timestampMs ?? a.uploadedAt) -
+          (b.exif.timestampMs ?? b.uploadedAt)
+      )
+      .map((p) => p.id);
+  }
+
+  if (mode === 'nearest-chain') {
+    const gpsPool = targetPhotos.filter(
+      (p): p is PhotoItem & {lat: number; lng: number} =>
+        p.hasGps && typeof p.lat === 'number' && typeof p.lng === 'number'
+    );
+    const nonGpsPool = targetPhotos.filter(
+      (p) => !p.hasGps || typeof p.lat !== 'number' || typeof p.lng !== 'number'
+    );
+
+    if (gpsPool.length === 0) {
+      return targetPhotos.map((p) => p.id);
+    }
+
+    // Start from the first photo of the first selected section
+    const firstSecPhotos = sortSectionPhotos(
+      gpsPool.filter((p) => p.sectionId === orderedSectionIds[0])
+    );
+    const startPhoto = firstSecPhotos[0] || gpsPool[0];
+    const remaining = new Set(gpsPool.map((p) => p.id));
+    const lookup: Record<string, PhotoItem & {lat: number; lng: number}> = {};
+    for (const p of gpsPool) lookup[p.id] = p;
+
+    const ordered: string[] = [startPhoto.id];
+    remaining.delete(startPhoto.id);
+    let current = startPhoto;
+
+    while (remaining.size > 0) {
+      let bestId: string | null = null;
+      let bestDist = Infinity;
+      for (const candidateId of remaining) {
+        const cand = lookup[candidateId];
+        const d = haversineMeters(current.lat, current.lng, cand.lat, cand.lng);
+        if (d < bestDist) {
+          bestDist = d;
+          bestId = candidateId;
+        }
+      }
+      if (!bestId) break;
+      ordered.push(bestId);
+      remaining.delete(bestId);
+      current = lookup[bestId];
+    }
+
+    for (const p of sortSectionPhotos(nonGpsPool)) {
+      ordered.push(p.id);
+    }
+    return ordered;
+  }
+
+  // 'section-order': connect each selected section end-to-end in user's chosen order
+  const result: string[] = [];
+  for (const secId of orderedSectionIds) {
+    const secPhotos = sortSectionPhotos(
+      targetPhotos.filter((p) => p.sectionId === secId)
+    );
+    for (const p of secPhotos) {
+      result.push(p.id);
+    }
+  }
+  return result;
+}
+
 /**
  * Automatically groups GPS-tagged photos into work sections based on
  * date and spatial proximity (> 1.5 km gap or > 4 hour gap starts a new section).
@@ -194,16 +302,12 @@ export function computeSectionProgress(
     return isDateInRange(e.workDate, dateRange);
   });
 
-  const gpsOrdered = sectionPhotos
-    .filter(
+  const gpsOrdered = sortSectionPhotos(
+    sectionPhotos.filter(
       (p): p is PhotoItem & {lat: number; lng: number} =>
         p.hasGps && typeof p.lat === 'number' && typeof p.lng === 'number'
     )
-    .sort((a, b) => {
-      const ta = a.exif.timestampMs ?? a.uploadedAt;
-      const tb = b.exif.timestampMs ?? b.uploadedAt;
-      return ta - tb;
-    });
+  );
 
   const fallbackDist = calculateOrderedPathMeters(gpsOrdered);
   const measuredDistanceMeters = roadDistanceMeters ?? fallbackDist;

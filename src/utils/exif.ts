@@ -6,6 +6,7 @@ import type {
   WorkEntry,
   WorkSection,
 } from '../types/photo';
+import {sortSectionPhotos} from './geo';
 
 function formatExposureTime(seconds?: number): string | undefined {
   if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return undefined;
@@ -255,13 +256,9 @@ export function exportPhotosAsGeoJson(
 
   const sectionFeatures = sections
     .map((sec) => {
-      const ordered = gpsPhotos
-        .filter((p) => p.sectionId === sec.id)
-        .sort(
-          (a, b) =>
-            (a.exif.timestampMs ?? a.uploadedAt) -
-            (b.exif.timestampMs ?? b.uploadedAt)
-        );
+      const ordered = sortSectionPhotos(
+        gpsPhotos.filter((p) => p.sectionId === sec.id)
+      );
       if (ordered.length < 2) return null;
       return {
         type: 'Feature',
